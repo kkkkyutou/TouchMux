@@ -43,7 +43,7 @@ docker compose up --build
 
 ## systemd
 
-仓库已提供 [touchmux.service](/home/kyutou/projects/SSHconnect/deploy/touchmux.service) 示例。
+仓库已提供 [touchmux.service](../deploy/touchmux.service) 示例。
 
 推荐流程：
 
