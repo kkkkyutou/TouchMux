@@ -32,7 +32,7 @@ export function SystemPanel({ capabilities, configSchema }: SystemPanelProps) {
           <div><strong>Codex 命令：</strong><code>{capabilities.codexExecutable}</code></div>
         </div>
       ) : (
-        <div className="session-meta">尚未读取系统能力。</div>
+        <div className="session-meta">尚未读取运行能力。</div>
       )}
       <div className="config-schema-list">
         {configSchema.map((item) => (

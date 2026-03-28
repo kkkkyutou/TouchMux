@@ -18,7 +18,7 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-const workspaceRoots = (process.env.TOUCHMUX_WORKSPACE_ROOTS ?? homeRoot)
+const workspaceRoots = (process.env.TOUCHMUX_WORKSPACE_ROOTS ?? os.homedir())
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean)
