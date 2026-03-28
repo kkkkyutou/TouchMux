@@ -127,6 +127,7 @@ export default function App() {
 
       <section className="main-grid">
         <SessionSidebar
+          token={token}
           sessions={sessions}
           historyItems={historyItems}
           roots={roots}
