@@ -29,9 +29,12 @@ TouchMux turns your phone browser into a remote cockpit for terminal work. It is
 - Use the real Ubuntu working environment as the default root, with support for multiple allowed roots
 - Browse controlled roots, navigate with breadcrumbs, and jump to the active session directory
 - Edit and save text files directly in the browser
+- Upload and download files from the browser
 - Click common terminal choices instead of relying only on arrow keys
 - Enforce goal-guarded auto-resume before a task is allowed to stop
 - Configure frontend dev port, backend port, and proxy targets
+- Start backend and frontend together with one command during development
+- Apply basic login rate limiting and write local audit logs for key actions
 - Expose health checks and config schema for deployment and extension
 
 ## Current Status
@@ -41,12 +44,12 @@ TouchMux is currently a self-hosted, single-user MVP. The main workflow is worki
 ## Not Yet Implemented
 
 - Multi-user accounts, roles, and permission isolation are not implemented yet.
-- File upload, download, binary preview, and richer in-browser editing are not implemented yet.
+- Binary preview, richer in-browser editing, and large-file handling are not implemented yet.
 - Choice clicking is still heuristic-based, not a full TUI semantic parser.
 - Goal guard is rule-based, not a true semantic task-completion judge.
 - Automatic recovery after backend restart is partial and still depends on real `tmux` state.
 - Docker deployment skeleton is provided, but containerized Codex runtime is not fully turnkey.
-- Security hardening is still incomplete: no login rate limiting, no 2FA, no OAuth/SSO, no stronger session management, and no full production security review yet.
+- Security hardening is still incomplete: no 2FA, no OAuth/SSO, no stronger session management, and no full production security review yet.
 
 ## Quick Start
 
@@ -62,11 +65,10 @@ cp .env.example .env
 npm install
 ```
 
-3. Start the backend and frontend.
+3. Start the full development stack with one command.
 
 ```bash
-npm run dev:backend
-npm run dev:frontend
+npm run dev
 ```
 
 4. Set the key ports and roots in `.env` if needed.
@@ -78,6 +80,8 @@ TOUCHMUX_BACKEND_ORIGIN=http://127.0.0.1:8787
 TOUCHMUX_BACKEND_WS_ORIGIN=ws://127.0.0.1:8787
 # Optional. If omitted, TouchMux uses the current Linux user's home directory.
 # TOUCHMUX_WORKSPACE_ROOTS=/home/your-user,/srv/shared
+TOUCHMUX_LOGIN_WINDOW_MS=60000
+TOUCHMUX_LOGIN_MAX_ATTEMPTS=6
 ```
 
 5. Open the frontend and log in.
@@ -86,6 +90,8 @@ TOUCHMUX_BACKEND_WS_ORIGIN=ws://127.0.0.1:8787
 - Backend: `http://localhost:8787`
 
 If you changed the ports above, use your configured values instead.
+
+For focused debugging, `npm run dev:backend` and `npm run dev:frontend` are still available separately.
 
 ## Requirements
 
@@ -106,6 +112,7 @@ If you changed the ports above, use your configured values instead.
 
 - `.env`, runtime SQLite files, `**/.data/`, and local autoresearch artifacts are git-ignored by default
 - This repository is intended for self-hosted use; review secrets, proxy settings, and allowed workspace roots before deployment
+- Runtime audit logs are written under `TOUCHMUX_DATA_DIR` as `audit.jsonl`
 - If you publish screenshots or demo recordings, avoid leaking real filesystem paths, shell history, or Codex session content
 
 ## Docker

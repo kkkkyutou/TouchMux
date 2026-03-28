@@ -12,6 +12,8 @@ import { SessionManager } from "./services/sessionManager.js";
 import { GoalGuardService } from "./services/goalGuardService.js";
 import { CodexHistoryService } from "./services/codexHistoryService.js";
 import { FileService } from "./services/fileService.js";
+import { AuditService } from "./services/auditService.js";
+import { LoginRateLimiter } from "./services/loginRateLimiter.js";
 import type { GoalGuardConfig } from "./types/models.js";
 
 const repository = new SessionRepository();
@@ -19,10 +21,20 @@ const sessionManager = new SessionManager(repository);
 const goalGuardService = new GoalGuardService(sessionManager, repository, config.goalGuardIntervalMs);
 const codexHistoryService = new CodexHistoryService();
 const fileService = new FileService(config.workspaceRoots);
+const auditService = new AuditService(config.dataDir);
+const loginRateLimiter = new LoginRateLimiter(config.loginRateLimitMaxAttempts, config.loginRateLimitWindowMs);
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "20mb" }));
+
+function getClientIp(request: Request): string {
+  const forwarded = request.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0]?.trim() ?? request.ip ?? "unknown";
+  }
+  return request.ip ?? "unknown";
+}
 
 function extractToken(request: Request): string | null {
   const authorization = request.headers.authorization;
@@ -57,11 +69,33 @@ function sendError(response: Response, error: unknown): void {
 }
 
 app.post("/api/auth/login", (request, response) => {
+  const clientIp = getClientIp(request);
+  const blockRemainingMs = loginRateLimiter.getBlockRemainingMs(clientIp);
+  if (blockRemainingMs > 0) {
+    auditService.record({
+      action: "auth.login.blocked",
+      ip: clientIp,
+      detail: { blockRemainingMs },
+    });
+    response.status(429).json({ message: `登录尝试过于频繁，请在 ${Math.ceil(blockRemainingMs / 1000)} 秒后重试` });
+    return;
+  }
   const password = typeof request.body?.password === "string" ? request.body.password : "";
   if (!safeEqual(password, config.password)) {
+    const retryAfterMs = loginRateLimiter.registerFailure(clientIp);
+    auditService.record({
+      action: "auth.login.failed",
+      ip: clientIp,
+      detail: { blocked: retryAfterMs > 0, retryAfterMs },
+    });
     response.status(401).json({ message: "密码错误" });
     return;
   }
+  loginRateLimiter.registerSuccess(clientIp);
+  auditService.record({
+    action: "auth.login.succeeded",
+    ip: clientIp,
+  });
   response.json({
     token: signToken(config.jwtSecret),
   });
@@ -88,6 +122,7 @@ app.get("/api/system/health", (_request, response) => {
       },
     },
     managedSessionCount: sessionManager.listSessionSummaries().length,
+    securityWarnings: config.securityWarnings,
     timestamp: Date.now(),
   });
 });
@@ -100,11 +135,14 @@ app.get("/api/system/capabilities", requireAuth, (_request, response) => {
     tmuxAvailable: tmuxProbe.status === 0,
     workspaceRoots: fileService.listRoots(),
     codexExecutable: config.codexExecutable,
+    securityWarnings: config.securityWarnings,
     features: {
       goalGuard: true,
       choiceOverlay: true,
       codexHistoryImport: true,
       fileExplorer: true,
+      fileUpload: true,
+      fileDownload: true,
     },
   });
 });
@@ -134,6 +172,16 @@ app.post("/api/session/create", requireAuth, (request, response) => {
           ? request.body.sourceCodexSessionId
           : undefined,
     });
+    auditService.record({
+      action: "session.created",
+      ip: getClientIp(request),
+      detail: {
+        sessionId: created.id,
+        workspaceRoot: created.workspaceRoot,
+        cwd: created.cwd,
+        mode: created.mode,
+      },
+    });
     response.status(201).json(created);
   } catch (error) {
     sendError(response, error);
@@ -146,6 +194,14 @@ app.post("/api/session/:id/close", requireAuth, (request, response) => {
       readPathParam(request.params.id),
       request.body?.force === true || request.body?.manualOverride === true,
     );
+    auditService.record({
+      action: "session.closed",
+      ip: getClientIp(request),
+      detail: {
+        sessionId: summary.id,
+        forced: request.body?.force === true || request.body?.manualOverride === true,
+      },
+    });
     response.json(summary);
   } catch (error) {
     sendError(response, error);
@@ -204,7 +260,53 @@ app.put("/api/fs/file", requireAuth, (request, response) => {
       String(request.body?.relativePath ?? ""),
       typeof request.body?.content === "string" ? request.body.content : "",
     );
+    auditService.record({
+      action: "file.updated",
+      ip: getClientIp(request),
+      detail: {
+        rootPath: String(request.body?.rootPath ?? ""),
+        relativePath: String(request.body?.relativePath ?? ""),
+      },
+    });
     response.json({ ok: true });
+  } catch (error) {
+    sendError(response, error);
+  }
+});
+
+app.post("/api/fs/upload", requireAuth, (request, response) => {
+  try {
+    const rootPath = String(request.body?.rootPath ?? "");
+    const directoryPath = String(request.body?.directoryPath ?? ".");
+    const fileName = String(request.body?.fileName ?? "").trim();
+    const contentBase64 = typeof request.body?.contentBase64 === "string" ? request.body.contentBase64 : "";
+    if (!fileName) {
+      throw new Error("缺少上传文件名");
+    }
+    const relativePath = path.posix.join(directoryPath === "." ? "" : directoryPath, fileName);
+    fileService.writeFileFromBase64(rootPath, relativePath, contentBase64);
+    auditService.record({
+      action: "file.uploaded",
+      ip: getClientIp(request),
+      detail: { rootPath, relativePath, size: Buffer.from(contentBase64, "base64").byteLength },
+    });
+    response.status(201).json({ ok: true, relativePath });
+  } catch (error) {
+    sendError(response, error);
+  }
+});
+
+app.get("/api/fs/download", requireAuth, (request, response) => {
+  try {
+    const rootPath = String(request.query.rootPath ?? "");
+    const relativePath = String(request.query.relativePath ?? "");
+    const filePath = fileService.resolvePath(rootPath, relativePath);
+    auditService.record({
+      action: "file.downloaded",
+      ip: getClientIp(request),
+      detail: { rootPath, relativePath },
+    });
+    response.download(filePath, path.basename(filePath));
   } catch (error) {
     sendError(response, error);
   }
@@ -213,6 +315,14 @@ app.put("/api/fs/file", requireAuth, (request, response) => {
 app.post("/api/fs/folder", requireAuth, (request, response) => {
   try {
     fileService.createFolder(String(request.body?.rootPath ?? ""), String(request.body?.relativePath ?? ""));
+    auditService.record({
+      action: "folder.created",
+      ip: getClientIp(request),
+      detail: {
+        rootPath: String(request.body?.rootPath ?? ""),
+        relativePath: String(request.body?.relativePath ?? ""),
+      },
+    });
     response.status(201).json({ ok: true });
   } catch (error) {
     sendError(response, error);
@@ -222,6 +332,14 @@ app.post("/api/fs/folder", requireAuth, (request, response) => {
 app.post("/api/fs/file", requireAuth, (request, response) => {
   try {
     fileService.createFile(String(request.body?.rootPath ?? ""), String(request.body?.relativePath ?? ""));
+    auditService.record({
+      action: "file.created",
+      ip: getClientIp(request),
+      detail: {
+        rootPath: String(request.body?.rootPath ?? ""),
+        relativePath: String(request.body?.relativePath ?? ""),
+      },
+    });
     response.status(201).json({ ok: true });
   } catch (error) {
     sendError(response, error);
@@ -235,6 +353,15 @@ app.post("/api/fs/rename", requireAuth, (request, response) => {
       String(request.body?.sourceRelativePath ?? ""),
       String(request.body?.targetRelativePath ?? ""),
     );
+    auditService.record({
+      action: "file.renamed",
+      ip: getClientIp(request),
+      detail: {
+        rootPath: String(request.body?.rootPath ?? ""),
+        sourceRelativePath: String(request.body?.sourceRelativePath ?? ""),
+        targetRelativePath: String(request.body?.targetRelativePath ?? ""),
+      },
+    });
     response.json({ ok: true });
   } catch (error) {
     sendError(response, error);
@@ -244,6 +371,14 @@ app.post("/api/fs/rename", requireAuth, (request, response) => {
 app.post("/api/fs/delete", requireAuth, (request, response) => {
   try {
     fileService.deleteEntry(String(request.body?.rootPath ?? ""), String(request.body?.relativePath ?? ""));
+    auditService.record({
+      action: "file.deleted",
+      ip: getClientIp(request),
+      detail: {
+        rootPath: String(request.body?.rootPath ?? ""),
+        relativePath: String(request.body?.relativePath ?? ""),
+      },
+    });
     response.json({ ok: true });
   } catch (error) {
     sendError(response, error);
@@ -291,6 +426,11 @@ app.put("/api/goal-guard/:sessionId", requireAuth, (request, response) => {
 app.post("/api/goal-guard/:sessionId/override-stop", requireAuth, (request, response) => {
   try {
     const summary = sessionManager.closeSession(readPathParam(request.params.sessionId), true);
+    auditService.record({
+      action: "session.force_stopped",
+      ip: getClientIp(request),
+      detail: { sessionId: summary.id },
+    });
     response.json(summary);
   } catch (error) {
     sendError(response, error);
@@ -311,6 +451,9 @@ if (fs.existsSync(frontendDist)) {
 
 const server = app.listen(config.port, config.host, () => {
   console.log(`TouchMux backend listening on http://${config.host}:${config.port}`);
+  for (const warning of config.securityWarnings) {
+    console.warn(`[security-warning] ${warning}`);
+  }
 });
 
 const terminalWss = new WebSocketServer({ noServer: true });

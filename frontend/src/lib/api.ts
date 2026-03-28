@@ -93,6 +93,20 @@ export async function readFile(token: string, rootPath: string, relativePath: st
   return data.content;
 }
 
+export async function downloadFile(token: string, rootPath: string, relativePath: string): Promise<Blob> {
+  const query = new URLSearchParams({ rootPath, relativePath });
+  const response = await fetch(`/api/fs/download?${query.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { message?: string };
+    throw new Error(data.message ?? "文件下载失败");
+  }
+  return response.blob();
+}
+
 export async function updateFile(
   token: string,
   rootPath: string,
@@ -116,6 +130,21 @@ export async function createFile(token: string, rootPath: string, relativePath: 
   await request("/api/fs/file", token, {
     method: "POST",
     body: JSON.stringify({ rootPath, relativePath }),
+  });
+}
+
+export async function uploadFile(
+  token: string,
+  payload: {
+    rootPath: string;
+    directoryPath: string;
+    fileName: string;
+    contentBase64: string;
+  },
+): Promise<{ relativePath: string }> {
+  return request<{ ok: true; relativePath: string }>("/api/fs/upload", token, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 
@@ -161,6 +190,7 @@ export async function fetchCapabilities(token: string): Promise<{
   nodeVersion: string;
   tmuxAvailable: boolean;
   codexExecutable: string;
+  securityWarnings: string[];
   features: Record<string, boolean>;
 }> {
   return request("/api/system/capabilities", token);

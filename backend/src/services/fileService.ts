@@ -54,6 +54,17 @@ export class FileService {
     fs.writeFileSync(filePath, content, "utf8");
   }
 
+  writeFileFromBase64(rootPath: string, relativePath: string, contentBase64: string): void {
+    const root = this.getRoot(rootPath);
+    const filePath = normalizeInsideRoot(root.rootPath, relativePath);
+    fs.writeFileSync(filePath, Buffer.from(contentBase64, "base64"));
+  }
+
+  resolvePath(rootPath: string, relativePath: string): string {
+    const root = this.getRoot(rootPath);
+    return normalizeInsideRoot(root.rootPath, relativePath);
+  }
+
   createFolder(rootPath: string, relativePath: string): void {
     const root = this.getRoot(rootPath);
     const dirPath = normalizeInsideRoot(root.rootPath, relativePath);

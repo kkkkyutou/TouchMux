@@ -13,6 +13,11 @@
 3. 通过 Cloudflare Tunnel、Nginx 或其他反向代理暴露。
 4. 为 `/ws/events` 与 `/ws/terminal` 打开 WebSocket 转发。
 
+## 本地开发
+
+- 直接运行 `npm run dev` 可同时启动前端和后端。
+- 若只调试单侧，仍可使用 `npm run dev:backend` 或 `npm run dev:frontend`。
+
 ## 健康检查
 
 - `GET /api/system/health`
@@ -73,10 +78,13 @@ docker compose up --build
 - `TOUCHMUX_DEFAULT_SHELL`
 - `TOUCHMUX_GOAL_GUARD_INTERVAL_MS`
 - `TOUCHMUX_IDLE_TIMEOUT_SEC`
+- `TOUCHMUX_LOGIN_WINDOW_MS`
+- `TOUCHMUX_LOGIN_MAX_ATTEMPTS`
 
 ## 开源与迁移
 
 - SQLite 数据位于 `TOUCHMUX_DATA_DIR`
+- 审计日志默认写入 `TOUCHMUX_DATA_DIR/audit.jsonl`
 - 修改 `TOUCHMUX_WORKSPACE_ROOTS` 后即可迁移到新的目录布局
 - 更推荐显式配置 `/home/your-user`、共享项目目录等允许根目录，而不是直接开放整个 `/`
 - Codex 历史导入依赖 `~/.codex/history.jsonl`

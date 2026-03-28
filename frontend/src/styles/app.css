@@ -325,6 +325,10 @@ code {
   background: rgba(248, 245, 236, 0.9);
 }
 
+.file-hidden-input {
+  display: none;
+}
+
 .editor-header {
   display: flex;
   justify-content: space-between;

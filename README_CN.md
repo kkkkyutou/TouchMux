@@ -31,9 +31,12 @@ TouchMux 用手机浏览器把本机终端工作流变成可触控的远程操�
 - 默认把真实 Ubuntu 用户主目录作为可访问根目录，并支持配置多个允许的根目录
 - 浏览受控根目录，支持面包屑导航、返回上一级、跳到当前会话目录
 - 直接在网页中编辑并保存文本文件
+- 支持网页内上传和下载文件
 - 对常见终端选择项提供点击式操作，而不只依赖方向键
 - 在任务允许停止前，启用 goal guard 自动续跑
 - 支持配置前端开发端口、后端端口和代理目标
+- 开发时可用一条命令同时启动前后端
+- 提供基础登录限流，并为关键操作写入本地审计日志
 - 提供健康检查和配置 schema，方便部署和二次开发
 
 ## 当前状态
@@ -43,12 +46,12 @@ TouchMux 目前是一个自托管、单用户优先的 MVP。主链路已经打�
 ## 未完成事项
 
 - 多用户账号、角色权限和权限隔离还没有实现。
-- 文件上传、下载、二进制预览、更完整的网页编辑体验还没有实现。
+- 二进制预览、更完整的网页编辑体验、大文件处理策略还没有实现。
 - 点击选择项目前仍是启发式识别，不是完整的 TUI 语义解析。
 - goal guard 目前是规则式，不是真正理解任务完成度的语义判定。
 - 后端重启后的自动恢复仍是部分实现，依赖真实 `tmux` 状态。
 - 已提供 Docker 部署骨架，但容器内直接运行 Codex 还不是开箱即用。
-- 安全加固仍未完成：还没有登录限流、2FA、OAuth/SSO、更强会话管理，也还没有经过完整的生产级安全审查。
+- 安全加固仍未完成：还没有 2FA、OAuth/SSO、更强会话管理，也还没有经过完整的生产级安全审查。
 
 ## 快速启动
 
@@ -64,11 +67,10 @@ cp .env.example .env
 npm install
 ```
 
-3. 启动后端和前端。
+3. 用一条命令启动整套开发环境。
 
 ```bash
-npm run dev:backend
-npm run dev:frontend
+npm run dev
 ```
 
 4. 如有需要，先在 `.env` 中配置端口、代理和允许访问的根目录。
@@ -80,6 +82,8 @@ TOUCHMUX_BACKEND_ORIGIN=http://127.0.0.1:8787
 TOUCHMUX_BACKEND_WS_ORIGIN=ws://127.0.0.1:8787
 # 可选。不设置时默认使用当前 Linux 用户主目录。
 # TOUCHMUX_WORKSPACE_ROOTS=/home/your-user,/srv/shared
+TOUCHMUX_LOGIN_WINDOW_MS=60000
+TOUCHMUX_LOGIN_MAX_ATTEMPTS=6
 ```
 
 5. 打开前端地址并登录使用。
@@ -88,6 +92,8 @@ TOUCHMUX_BACKEND_WS_ORIGIN=ws://127.0.0.1:8787
 - 后端：`http://localhost:8787`
 
 如果你修改了端口，请使用你自己的配置值访问。
+
+如果只是想单独调试某一侧，仍然可以分别使用 `npm run dev:backend` 和 `npm run dev:frontend`。
 
 ## 环境要求
 
@@ -108,6 +114,7 @@ TOUCHMUX_BACKEND_WS_ORIGIN=ws://127.0.0.1:8787
 
 - `.env`、运行期 SQLite、任意层级的 `**/.data/` 目录，以及本地 autoresearch 产物，默认都不会被提交
 - 这个仓库面向自托管使用；正式对外部署前，请重新检查密钥、代理配置和允许访问的根目录
+- 运行期审计日志会写入 `TOUCHMUX_DATA_DIR/audit.jsonl`
 - 如果你要公开截图或录屏，注意不要泄露真实路径、shell 历史或 Codex 对话内容
 
 ## Docker

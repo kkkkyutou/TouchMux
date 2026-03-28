@@ -38,9 +38,12 @@ export interface AppConfig {
   shell: string;
   goalGuardIntervalMs: number;
   defaultIdleTimeoutSec: number;
+  loginRateLimitWindowMs: number;
+  loginRateLimitMaxAttempts: number;
   workspaceRoots: WorkspaceEntry[];
   codexExecutable: string;
   codexArgs: string[];
+  securityWarnings: string[];
 }
 
 export interface ConfigSchemaEntry {
@@ -62,6 +65,8 @@ export const config: AppConfig = {
   shell: process.env.TOUCHMUX_DEFAULT_SHELL ?? "/bin/bash",
   goalGuardIntervalMs: Number(process.env.TOUCHMUX_GOAL_GUARD_INTERVAL_MS ?? 15000),
   defaultIdleTimeoutSec: Number(process.env.TOUCHMUX_IDLE_TIMEOUT_SEC ?? 90),
+  loginRateLimitWindowMs: Number(process.env.TOUCHMUX_LOGIN_WINDOW_MS ?? 60000),
+  loginRateLimitMaxAttempts: Number(process.env.TOUCHMUX_LOGIN_MAX_ATTEMPTS ?? 6),
   workspaceRoots: workspaceRoots.map((rootPath) => ({
     rootPath,
     label:
@@ -73,6 +78,17 @@ export const config: AppConfig = {
   })),
   codexExecutable,
   codexArgs,
+  securityWarnings: [
+    ...(process.env.TOUCHMUX_PASSWORD ?? "change-me") === "change-me"
+      ? ["TOUCHMUX_PASSWORD 仍在使用默认值，公开部署前必须修改。"]
+      : [],
+    ...(process.env.TOUCHMUX_JWT_SECRET ?? "change-this-secret") === "change-this-secret"
+      ? ["TOUCHMUX_JWT_SECRET 仍在使用默认值，公开部署前必须修改。"]
+      : [],
+    ...workspaceRoots.some((rootPath) => rootPath === path.parse(rootPath).root)
+      ? ["TOUCHMUX_WORKSPACE_ROOTS 包含文件系统根目录 `/`，这会显著扩大暴露面。"]
+      : [],
+  ],
 };
 
 export const configSchema: ConfigSchemaEntry[] = [
@@ -145,5 +161,19 @@ export const configSchema: ConfigSchemaEntry[] = [
     defaultValue: 90,
     example: "90",
     description: "默认空闲阈值，超过后可触发自动续跑。",
+  },
+  {
+    key: "TOUCHMUX_LOGIN_WINDOW_MS",
+    required: false,
+    defaultValue: 60000,
+    example: "60000",
+    description: "登录失败限流窗口，单位毫秒。",
+  },
+  {
+    key: "TOUCHMUX_LOGIN_MAX_ATTEMPTS",
+    required: false,
+    defaultValue: 6,
+    example: "6",
+    description: "登录失败达到该次数后，在窗口期内临时阻断继续尝试。",
   },
 ];
