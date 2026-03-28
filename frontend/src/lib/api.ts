@@ -93,6 +93,18 @@ export async function readFile(token: string, rootPath: string, relativePath: st
   return data.content;
 }
 
+export async function updateFile(
+  token: string,
+  rootPath: string,
+  relativePath: string,
+  content: string,
+): Promise<void> {
+  await request("/api/fs/file", token, {
+    method: "PUT",
+    body: JSON.stringify({ rootPath, relativePath, content }),
+  });
+}
+
 export async function createFolder(token: string, rootPath: string, relativePath: string): Promise<void> {
   await request("/api/fs/folder", token, {
     method: "POST",

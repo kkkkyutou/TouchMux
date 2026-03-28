@@ -197,6 +197,19 @@ app.get("/api/fs/file", requireAuth, (request, response) => {
   }
 });
 
+app.put("/api/fs/file", requireAuth, (request, response) => {
+  try {
+    fileService.updateFile(
+      String(request.body?.rootPath ?? ""),
+      String(request.body?.relativePath ?? ""),
+      typeof request.body?.content === "string" ? request.body.content : "",
+    );
+    response.json({ ok: true });
+  } catch (error) {
+    sendError(response, error);
+  }
+});
+
 app.post("/api/fs/folder", requireAuth, (request, response) => {
   try {
     fileService.createFolder(String(request.body?.rootPath ?? ""), String(request.body?.relativePath ?? ""));

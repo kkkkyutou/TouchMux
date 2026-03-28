@@ -48,6 +48,12 @@ export class FileService {
     return fs.readFileSync(filePath, "utf8");
   }
 
+  updateFile(rootPath: string, relativePath: string, content: string): void {
+    const root = this.getRoot(rootPath);
+    const filePath = normalizeInsideRoot(root.rootPath, relativePath);
+    fs.writeFileSync(filePath, content, "utf8");
+  }
+
   createFolder(rootPath: string, relativePath: string): void {
     const root = this.getRoot(rootPath);
     const dirPath = normalizeInsideRoot(root.rootPath, relativePath);

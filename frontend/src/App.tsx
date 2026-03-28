@@ -209,7 +209,12 @@ export default function App() {
           </div>
 
           <div className="secondary-grid">
-            <FileBrowser token={token} roots={roots} activeSessionCwd={currentSession?.cwd ?? null} />
+            <FileBrowser
+              token={token}
+              roots={roots}
+              activeSessionCwd={currentSession?.cwd ?? null}
+              activeSessionRoot={currentSession?.workspaceRoot ?? null}
+            />
             <GoalGuardEditor
               token={token}
               session={currentSession}
