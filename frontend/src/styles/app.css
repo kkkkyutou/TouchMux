@@ -122,16 +122,9 @@ code {
   margin: 0.2rem 0 0;
 }
 
-.main-grid {
+.console-layout,
+.workbench {
   display: grid;
-  grid-template-columns: minmax(310px, 380px) minmax(0, 1fr);
-  gap: 1rem;
-  align-items: start;
-}
-
-.secondary-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
 }
 
@@ -157,16 +150,98 @@ code {
   gap: 1rem;
 }
 
-.session-sidebar,
-.file-browser,
-.goal-panel,
-.system-panel {
-  min-height: 24rem;
-}
-
 .session-create-form,
 .session-list,
 .file-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.console-topbar {
+  align-items: flex-start;
+}
+
+.console-topbar-main,
+.console-topbar-actions,
+.session-drawer-header,
+.drawer-section-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.console-topbar-main {
+  align-items: center;
+}
+
+.drawer-toggle-button {
+  width: auto;
+  border-radius: 18px;
+  padding: 0.85rem 1.15rem;
+}
+
+.console-session-chip {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(18, 34, 25, 0.08);
+}
+
+.console-panel {
+  min-height: 28rem;
+}
+
+.session-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(92vw, 28rem);
+  background: rgba(255, 250, 240, 0.98);
+  border-right: 1px solid rgba(18, 34, 25, 0.08);
+  box-shadow: var(--shadow);
+  transform: translateX(-104%);
+  transition: transform 0.24s ease;
+  z-index: 40;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  backdrop-filter: blur(14px);
+}
+
+.session-drawer.open {
+  transform: translateX(0);
+}
+
+.session-drawer-header {
+  padding: 1rem 1rem 0.75rem;
+}
+
+.session-drawer-scroll {
+  overflow: auto;
+  padding: 0 1rem 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(18, 34, 25, 0.24);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 30;
+}
+
+.drawer-backdrop.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer-section {
   display: grid;
   gap: 0.85rem;
 }
@@ -180,12 +255,26 @@ code {
   padding: 0.85rem;
 }
 
-.directory-picker-summary {
+.directory-picker-summary,
+.panel-toggle-title {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
   align-items: center;
-  cursor: pointer;
+}
+
+.panel-toggle-title {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  text-align: left;
+  margin-bottom: 0.85rem;
+}
+
+.directory-chain {
+  display: grid;
+  gap: 0.75rem;
 }
 
 .directory-picker-top {
@@ -236,6 +325,15 @@ code {
   padding: 0.95rem;
   cursor: pointer;
   transition: transform 0.18s ease, border-color 0.18s ease;
+}
+
+.session-card-main {
+  display: grid;
+  gap: 0.45rem;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  text-align: left;
 }
 
 .session-card.active {
@@ -439,11 +537,6 @@ code {
 }
 
 @media (max-width: 1100px) {
-  .main-grid,
-  .secondary-grid {
-    grid-template-columns: 1fr;
-  }
-
   .terminal-host {
     height: 52vh;
   }
@@ -459,15 +552,24 @@ code {
     align-items: stretch;
   }
 
+  .console-topbar-main,
+  .console-topbar-actions,
+  .drawer-section-header,
+  .session-drawer-header,
+  .directory-picker-summary,
   .inline-grid,
   .file-toolbar {
-    grid-template-columns: 1fr;
     flex-direction: column;
+    align-items: stretch;
   }
 
   .panel {
     border-radius: 22px;
     padding: 0.9rem;
+  }
+
+  .session-drawer {
+    width: 100vw;
   }
 
   .terminal-host {

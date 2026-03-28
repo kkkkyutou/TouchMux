@@ -9,6 +9,7 @@ interface SessionSidebarProps {
   roots: WorkspaceEntry[];
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
+  onCloseDrawer: () => void;
   onCreateSession: (payload: {
     title: string;
     workspaceRoot: string;
@@ -19,17 +20,6 @@ interface SessionSidebarProps {
   }) => Promise<void>;
   onCloseSession: (sessionId: string) => Promise<void>;
   onForceCloseSession: (sessionId: string) => Promise<void>;
-}
-
-function parentPath(value: string): string {
-  if (!value || value === ".") {
-    return ".";
-  }
-  const parts = value.split("/").filter(Boolean);
-  if (parts.length <= 1) {
-    return ".";
-  }
-  return parts.slice(0, -1).join("/");
 }
 
 function formatDirectoryLabel(rootLabel: string, relativePath: string): string {
@@ -44,6 +34,7 @@ export function SessionSidebar({
   roots,
   currentSessionId,
   onSelectSession,
+  onCloseDrawer,
   onCreateSession,
   onCloseSession,
   onForceCloseSession,
@@ -51,23 +42,26 @@ export function SessionSidebar({
   const [title, setTitle] = useState("");
   const [mode, setMode] = useState<SessionMode>("new");
   const [workspaceRoot, setWorkspaceRoot] = useState(roots[0]?.rootPath ?? "");
-  const [cwd, setCwd] = useState(".");
-  const [directoryBrowsePath, setDirectoryBrowsePath] = useState(".");
-  const [directoryEntries, setDirectoryEntries] = useState<FileEntry[]>([]);
+  const [directoryChain, setDirectoryChain] = useState<string[]>([]);
+  const [directoryLevels, setDirectoryLevels] = useState<FileEntry[][]>([]);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [sourceId, setSourceId] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const historyOptions = useMemo(() => historyItems.slice(0, 20), [historyItems]);
+  const liveSessions = useMemo(() => sessions.filter((session) => session.hasTmuxSession), [sessions]);
+  const rootLabelMap = useMemo(
+    () => new Map(roots.map((root) => [root.rootPath, root.label])),
+    [roots],
+  );
   const selectedRootLabel = useMemo(
     () => roots.find((root) => root.rootPath === workspaceRoot)?.label ?? "当前根目录",
     [roots, workspaceRoot],
   );
-  const directoryOptions = useMemo(
-    () => directoryEntries.filter((entry) => entry.type === "directory"),
-    [directoryEntries],
-  );
+  const cwd = directoryChain.at(-1) ?? ".";
 
   useEffect(() => {
     if (roots.length > 0 && !workspaceRoot) {
@@ -76,8 +70,7 @@ export function SessionSidebar({
   }, [roots, workspaceRoot]);
 
   useEffect(() => {
-    setCwd(".");
-    setDirectoryBrowsePath(".");
+    setDirectoryChain([]);
   }, [workspaceRoot]);
 
   useEffect(() => {
@@ -85,14 +78,19 @@ export function SessionSidebar({
       return;
     }
     let cancelled = false;
-    async function loadDirectories(): Promise<void> {
+    async function loadDirectoryLevels(): Promise<void> {
       try {
         setDirectoryLoading(true);
-        const items = await listDirectory(token, workspaceRoot, directoryBrowsePath);
+        const paths = [".", ...directoryChain];
+        const results = await Promise.all(
+          paths.map((relativePath) => listDirectory(token, workspaceRoot, relativePath)),
+        );
         if (cancelled) {
           return;
         }
-        setDirectoryEntries(items);
+        setDirectoryLevels(
+          results.map((items) => items.filter((entry) => entry.type === "directory")),
+        );
         setDirectoryError(null);
       } catch (error) {
         if (cancelled) {
@@ -105,26 +103,86 @@ export function SessionSidebar({
         }
       }
     }
-    void loadDirectories();
+    void loadDirectoryLevels();
     return () => {
       cancelled = true;
     };
-  }, [token, workspaceRoot, directoryBrowsePath]);
+  }, [token, workspaceRoot, directoryChain]);
 
   return (
-    <aside className="panel session-sidebar">
-      <div className="panel-header">
+    <div className="drawer-section session-sidebar">
+      <div className="drawer-section-header">
         <div>
-          <div className="eyebrow">会话</div>
-          <h2>Codex / tmux</h2>
-          <div className="session-meta">直接访问现有工作环境，不强制单独工作区。</div>
+          <div className="eyebrow">Codex</div>
+          <h2>管理终端</h2>
+          <div className="session-meta">当前运行中的会话会显示在这里，点一下即可切回控制台。</div>
         </div>
+      </div>
+
+      <div className="session-list">
+        {liveSessions.length === 0 ? <div className="session-meta">当前没有运行中的 Codex 终端。</div> : null}
+        {liveSessions.map((session) => (
+          <article
+            key={session.id}
+            className={`session-card ${currentSessionId === session.id ? "active" : ""}`}
+          >
+            <button
+              type="button"
+              className="session-card-main"
+              onClick={() => {
+                onSelectSession(session.id);
+                onCloseDrawer();
+              }}
+            >
+              <div className="session-card-top">
+                <strong>{session.title}</strong>
+                <span className={`status-pill status-${session.status}`}>{session.status}</span>
+              </div>
+              <div className="session-meta">
+                {formatDirectoryLabel(rootLabelMap.get(session.workspaceRoot) ?? "当前根目录", session.cwd)}
+              </div>
+              <div className="session-preview">{session.lastOutputPreview || "尚无输出"}</div>
+            </button>
+            <div className="session-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  onSelectSession(session.id);
+                  onCloseDrawer();
+                }}
+              >
+                显示
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  void onCloseSession(session.id);
+                }}
+              >
+                关闭
+              </button>
+              <button
+                type="button"
+                className="ghost-button danger"
+                onClick={() => {
+                  void onForceCloseSession(session.id);
+                }}
+              >
+                删除终端
+              </button>
+            </div>
+          </article>
+        ))}
       </div>
 
       <form
         className="session-create-form"
         onSubmit={(event) => {
           event.preventDefault();
+          setSubmitting(true);
+          setSubmitError(null);
           void onCreateSession({
             title: title || `${mode === "new" ? "新建" : mode === "resume" ? "恢复" : "Fork"} 会话`,
             workspaceRoot,
@@ -132,17 +190,33 @@ export function SessionSidebar({
             mode,
             prompt: prompt || undefined,
             sourceCodexSessionId: sourceId || undefined,
-          }).then(() => {
-            setTitle("");
-            setPrompt("");
-          });
+          })
+            .then(() => {
+              setTitle("");
+              setPrompt("");
+              setDirectoryChain([]);
+              onCloseDrawer();
+            })
+            .catch((error) => {
+              setSubmitError(error instanceof Error ? error.message : "创建会话失败");
+            })
+            .finally(() => {
+              setSubmitting(false);
+            });
         }}
       >
-        <label>
-          标题
-          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="比如：调试 TouchMux" />
-        </label>
+        <div className="drawer-section-header">
+          <div>
+            <div className="eyebrow">新建</div>
+            <h2>创建 Codex 终端</h2>
+          </div>
+        </div>
+        {submitError ? <div className="error-banner">{submitError}</div> : null}
         <div className="inline-grid">
+          <label>
+            标题
+            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="比如：修复终端附着" />
+          </label>
           <label>
             模式
             <select value={mode} onChange={(event) => setMode(event.target.value as SessionMode)}>
@@ -162,66 +236,64 @@ export function SessionSidebar({
             </select>
           </label>
         </div>
-        <details className="directory-picker" open>
-          <summary className="directory-picker-summary">
+        <label>
+          工作根目录
+          <select value={workspaceRoot} onChange={(event) => setWorkspaceRoot(event.target.value)}>
+            {roots.map((root) => (
+              <option key={root.rootPath} value={root.rootPath}>
+                {root.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="directory-picker">
+          <div className="directory-picker-summary">
             <strong>启动目录</strong>
             <span className="session-meta">{formatDirectoryLabel(selectedRootLabel, cwd)}</span>
-          </summary>
+          </div>
           <div className="directory-picker-top">
-            <span className="session-meta">当前浏览：{formatDirectoryLabel(selectedRootLabel, directoryBrowsePath)}</span>
+            <span className="session-meta">从根目录开始，逐级选择子目录。</span>
             {directoryLoading ? <span className="session-meta">读取中...</span> : null}
+          </div>
+          <div className="directory-chain">
+            {directoryLevels.map((level, index) => (
+              <label key={`level-${index}`}>
+                {index === 0 ? "第 1 级子目录" : `第 ${index + 1} 级子目录`}
+                <select
+                  value={directoryChain[index] ?? ""}
+                  onChange={(event) => {
+                    const nextPath = event.target.value;
+                    if (!nextPath) {
+                      setDirectoryChain((current) => current.slice(0, index));
+                      return;
+                    }
+                    setDirectoryChain((current) => [...current.slice(0, index), nextPath]);
+                  }}
+                >
+                  <option value="">{index === 0 ? "保持在根目录" : "停在当前层级"}</option>
+                  {level.map((entry) => (
+                    <option key={entry.path} value={entry.path}>
+                      {entry.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
           </div>
           <div className="file-entry-actions">
             <button
               type="button"
               className="ghost-button"
               onClick={() => {
-                setCwd(directoryBrowsePath);
-              }}
-            >
-              使用当前目录
-            </button>
-            <button
-              type="button"
-              className="ghost-button"
-              disabled={directoryBrowsePath === "."}
-              onClick={() => {
-                setDirectoryBrowsePath(parentPath(directoryBrowsePath));
-              }}
-            >
-              上一级
-            </button>
-            <button
-              type="button"
-              className="ghost-button"
-              disabled={directoryBrowsePath === "."}
-              onClick={() => {
-                setDirectoryBrowsePath(".");
+                setDirectoryChain([]);
               }}
             >
               回到根目录
             </button>
           </div>
-          <div className="directory-list" role="list">
-            {directoryOptions.map((entry) => (
-              <button
-                key={entry.path}
-                type="button"
-                className={`directory-item ${cwd === entry.path ? "active" : ""}`}
-                onClick={() => {
-                  setDirectoryBrowsePath(entry.path);
-                  setCwd(entry.path);
-                }}
-              >
-                <span className="directory-item-icon">DIR</span>
-                <span>{entry.name}</span>
-              </button>
-            ))}
-            {directoryOptions.length === 0 ? <div className="session-meta">当前层级没有子目录。</div> : null}
-          </div>
           <input value={cwd} readOnly aria-label="选中的启动目录" />
           {directoryError ? <div className="error-banner">{directoryError}</div> : null}
-        </details>
+        </div>
         {mode !== "new" ? (
           <label>
             源 Codex Session
@@ -244,49 +316,16 @@ export function SessionSidebar({
             rows={3}
           />
         </label>
-        <button type="submit" disabled={!workspaceRoot || (mode !== "new" && !sourceId)}>
-          {mode === "new" ? "创建并启动" : mode === "resume" ? "恢复到新 tmux" : "Fork 到新 tmux"}
+        <button type="submit" disabled={submitting || !workspaceRoot || (mode !== "new" && !sourceId)}>
+          {submitting
+            ? "处理中..."
+            : mode === "new"
+              ? "创建并启动"
+              : mode === "resume"
+                ? "恢复到新 tmux"
+                : "Fork 到新 tmux"}
         </button>
       </form>
-
-      <div className="session-list">
-        {sessions.map((session) => (
-          <article
-            key={session.id}
-            className={`session-card ${currentSessionId === session.id ? "active" : ""}`}
-            onClick={() => onSelectSession(session.id)}
-          >
-            <div className="session-card-top">
-              <strong>{session.title}</strong>
-              <span className={`status-pill status-${session.status}`}>{session.status}</span>
-            </div>
-            <div className="session-meta">{session.cwd}</div>
-            <div className="session-preview">{session.lastOutputPreview || "尚无输出"}</div>
-            <div className="session-actions">
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void onCloseSession(session.id);
-                }}
-              >
-                关闭
-              </button>
-              <button
-                type="button"
-                className="ghost-button danger"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void onForceCloseSession(session.id);
-                }}
-              >
-                强停
-              </button>
-            </div>
-          </article>
-        ))}
-      </div>
-    </aside>
+    </div>
   );
 }

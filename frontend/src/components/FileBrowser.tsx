@@ -51,6 +51,7 @@ function breadcrumbItems(value: string): Array<{ label: string; path: string }> 
 }
 
 export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot }: FileBrowserProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const [rootPath, setRootPath] = useState(roots[0]?.rootPath ?? "");
   const [relativePath, setRelativePath] = useState(".");
   const [pathInput, setPathInput] = useState(".");
@@ -88,6 +89,14 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
     }
     setRootPath((current) => (current === activeSessionRoot ? current : activeSessionRoot));
   }, [activeSessionRoot]);
+
+  useEffect(() => {
+    if (!activeSessionRoot) {
+      return;
+    }
+    setRootPath(activeSessionRoot);
+    setRelativePath(activeSessionCwd || ".");
+  }, [activeSessionRoot, activeSessionCwd]);
 
   useEffect(() => {
     setSelectedFilePath(null);
@@ -205,41 +214,56 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
   }, [isDirty]);
 
   return (
-    <section className="panel file-browser">
-      <div className="panel-header">
-        <div>
-          <div className="eyebrow">文件</div>
-          <h2>现有工作环境</h2>
-        </div>
-        <div className="file-entry-actions">
-          <button
-            type="button"
-            className="ghost-button"
-            onClick={() => {
-              if (!confirmDiscardChanges()) {
-                return;
-              }
-              if (activeSessionRoot) {
-                setRootPath(activeSessionRoot);
-              }
-              if (activeSessionCwd) {
-                setRelativePath(activeSessionCwd);
-              }
-            }}
-          >
-            跳到当前会话目录
-          </button>
-          <button
-            type="button"
-            className="ghost-button"
-            onClick={() => {
-              navigateToDirectory(".");
-            }}
-          >
-            回到根目录
-          </button>
-        </div>
-      </div>
+    <section className="panel file-browser browser-dock">
+      <button
+        type="button"
+        className="panel-toggle-title"
+        onClick={() => {
+          setIsExpanded((current) => !current);
+        }}
+      >
+        <span>
+          <div className="eyebrow">文件管理</div>
+          <h2>{isExpanded ? "点击收起文件管理" : "点击展开文件管理"}</h2>
+        </span>
+        <span className="session-meta">{relativePath === "." ? "根目录" : relativePath}</span>
+      </button>
+      {!isExpanded ? null : (
+        <>
+          <div className="panel-header">
+            <div>
+              <div className="eyebrow">文件</div>
+              <h2>现有工作环境</h2>
+            </div>
+            <div className="file-entry-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  if (!confirmDiscardChanges()) {
+                    return;
+                  }
+                  if (activeSessionRoot) {
+                    setRootPath(activeSessionRoot);
+                  }
+                  if (activeSessionCwd) {
+                    setRelativePath(activeSessionCwd);
+                  }
+                }}
+              >
+                同步当前终端目录
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  navigateToDirectory(".");
+                }}
+              >
+                回到根目录
+              </button>
+            </div>
+          </div>
       <div className="file-toolbar">
         <select
           value={rootPath}
@@ -459,6 +483,8 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
         placeholder="点击文件后可直接编辑并保存文本内容"
         spellCheck={false}
       />
+        </>
+      )}
     </section>
   );
 }
