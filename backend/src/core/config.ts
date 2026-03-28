@@ -7,6 +7,7 @@ import type { WorkspaceEntry } from "../types/models.js";
 
 const backendRoot = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const projectRoot = path.resolve(backendRoot, "..");
+const homeRoot = os.homedir();
 
 dotenv.config({ path: path.join(projectRoot, ".env") });
 dotenv.config({ path: path.join(backendRoot, ".env") });
@@ -17,7 +18,7 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-const workspaceRoots = (process.env.TOUCHMUX_WORKSPACE_ROOTS ?? projectRoot)
+const workspaceRoots = (process.env.TOUCHMUX_WORKSPACE_ROOTS ?? homeRoot)
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean)
@@ -63,7 +64,12 @@ export const config: AppConfig = {
   defaultIdleTimeoutSec: Number(process.env.TOUCHMUX_IDLE_TIMEOUT_SEC ?? 90),
   workspaceRoots: workspaceRoots.map((rootPath) => ({
     rootPath,
-    label: path.basename(rootPath) || rootPath,
+    label:
+      rootPath === homeRoot
+        ? `Home (${path.basename(homeRoot) || homeRoot})`
+        : rootPath === projectRoot
+          ? "Current Project"
+          : path.basename(rootPath) || rootPath,
   })),
   codexExecutable,
   codexArgs,
@@ -101,9 +107,9 @@ export const configSchema: ConfigSchemaEntry[] = [
   {
     key: "TOUCHMUX_WORKSPACE_ROOTS",
     required: false,
-    defaultValue: projectRoot,
-    example: "/srv/workspace,/srv/shared",
-    description: "允许在网页中访问的根目录列表，逗号分隔。",
+    defaultValue: homeRoot,
+    example: "/home/your-user,/srv/shared",
+    description: "允许在网页中访问的根目录列表，默认使用当前 Linux 用户主目录。",
   },
   {
     key: "TOUCHMUX_DATA_DIR",

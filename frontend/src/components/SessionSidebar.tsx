@@ -44,6 +44,7 @@ export function SessionSidebar({
         <div>
           <div className="eyebrow">会话</div>
           <h2>Codex / tmux</h2>
+          <div className="session-meta">直接访问现有工作环境，不强制单独工作区。</div>
         </div>
       </div>
 
@@ -78,7 +79,7 @@ export function SessionSidebar({
             </select>
           </label>
           <label>
-            工作区
+            工作根目录
             <select value={workspaceRoot} onChange={(event) => setWorkspaceRoot(event.target.value)}>
               {roots.map((root) => (
                 <option key={root.rootPath} value={root.rootPath}>
@@ -90,7 +91,7 @@ export function SessionSidebar({
         </div>
         <label>
           相对目录
-          <input value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="." />
+          <input value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="比如：projects/TouchMux 或 ." />
         </label>
         {mode !== "new" ? (
           <label>
