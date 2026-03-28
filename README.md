@@ -25,7 +25,7 @@ TouchMux turns your phone browser into a remote cockpit for terminal work. It is
 
 - Manage `tmux` / `Codex` from a phone browser
 - Create, resume, fork, and close persistent Codex sessions
-- Pick startup directories by clicking through child folders under the selected root, instead of relying only on manual path typing
+- Pick startup directories by expanding and clicking child folders under the selected root, instead of relying only on manual path typing
 - Import existing Codex conversation indexes from `~/.codex/history.jsonl`
 - Use the real Ubuntu working environment as the default root, with support for multiple allowed roots
 - Browse controlled roots, navigate with breadcrumbs, and jump to the active session directory

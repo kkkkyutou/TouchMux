@@ -76,6 +76,17 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  private resolveSessionCwd(session: ManagedSessionRecord): string {
+    return path.isAbsolute(session.cwd) ? session.cwd : normalizeInsideRoot(session.workspaceRoot, session.cwd);
+  }
+
+  private relativeSessionCwd(session: ManagedSessionRecord): string {
+    if (!path.isAbsolute(session.cwd)) {
+      return session.cwd || ".";
+    }
+    return path.relative(session.workspaceRoot, session.cwd) || ".";
+  }
+
   private buildCodexCommand(input: CreateSessionInput): string {
     const baseArgs = [...config.codexArgs];
     if (input.mode === "new") {
@@ -121,12 +132,13 @@ export class SessionManager extends EventEmitter {
   }
 
   createSession(input: CreateSessionInput): ManagedSessionRecord {
-    const cwd = this.ensureCwd(input);
-    const command = this.buildCodexCommand({ ...input, cwd });
+    const absoluteCwd = this.ensureCwd(input);
+    const relativeCwd = path.relative(input.workspaceRoot, absoluteCwd) || ".";
+    const command = this.buildCodexCommand({ ...input, cwd: absoluteCwd });
     const sessionId = crypto.randomUUID();
     const tmuxSessionName = `touchmux_${sessionId.slice(0, 8)}`;
 
-    this.runTmux(["new-session", "-d", "-s", tmuxSessionName, "-c", cwd]);
+    this.runTmux(["new-session", "-d", "-s", tmuxSessionName, "-c", absoluteCwd]);
     this.sendLiteral(tmuxSessionName, command, true);
 
     const created = this.repository.createSession({
@@ -134,7 +146,7 @@ export class SessionManager extends EventEmitter {
       title: input.title.trim() || `会话 ${sessionId.slice(0, 6)}`,
       mode: input.mode,
       status: "running",
-      cwd,
+      cwd: relativeCwd,
       workspaceRoot: input.workspaceRoot,
       tmuxSessionName,
       sourceCodexSessionId: input.sourceCodexSessionId ?? null,
@@ -163,6 +175,7 @@ export class SessionManager extends EventEmitter {
     const runtime = this.getRuntime(record.id);
     return {
       ...record,
+      cwd: this.relativeSessionCwd(record),
       hasTmuxSession: this.hasTmuxSession(record.tmuxSessionName),
       choiceOverlay: runtime.choiceOverlay,
     };
@@ -194,7 +207,7 @@ export class SessionManager extends EventEmitter {
       name: "xterm-256color",
       cols,
       rows,
-      cwd: session.cwd,
+      cwd: this.resolveSessionCwd(session),
       env: {
         ...process.env,
         TERM: "xterm-256color",
@@ -310,7 +323,7 @@ export class SessionManager extends EventEmitter {
       return true;
     }
     const result = spawnSync(config.shell, ["-lc", session.goalConfig.successCommand], {
-      cwd: session.cwd,
+      cwd: this.resolveSessionCwd(session),
       stdio: "pipe",
       encoding: "utf8",
     });

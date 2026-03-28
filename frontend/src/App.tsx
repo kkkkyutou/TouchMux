@@ -44,6 +44,12 @@ export default function App() {
     () => sessions.find((session) => session.id === currentSessionId) ?? null,
     [sessions, currentSessionId],
   );
+  const handleTerminalReady = useCallback((sender: ((text: string) => void) | null) => {
+    senderRef.current = sender;
+  }, []);
+  const handleTerminalError = useCallback((message: string) => {
+    setFlashError(message);
+  }, []);
 
   const refreshAll = useCallback(async () => {
     if (!token) {
@@ -167,10 +173,8 @@ export default function App() {
               <TerminalPane
                 token={token}
                 sessionId={deferredSessionId}
-                onReady={(sender) => {
-                  senderRef.current = sender;
-                }}
-                onError={(message) => setFlashError(message)}
+                onReady={handleTerminalReady}
+                onError={handleTerminalError}
               />
               {currentSession?.choiceOverlay.visible ? (
                 <div className="choice-overlay">

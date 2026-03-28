@@ -162,11 +162,11 @@ export function SessionSidebar({
             </select>
           </label>
         </div>
-        <div className="directory-picker">
-          <div className="directory-picker-top">
+        <details className="directory-picker" open>
+          <summary className="directory-picker-summary">
             <strong>启动目录</strong>
-            <span className="session-meta">当前选中：{formatDirectoryLabel(selectedRootLabel, cwd)}</span>
-          </div>
+            <span className="session-meta">{formatDirectoryLabel(selectedRootLabel, cwd)}</span>
+          </summary>
           <div className="directory-picker-top">
             <span className="session-meta">当前浏览：{formatDirectoryLabel(selectedRootLabel, directoryBrowsePath)}</span>
             {directoryLoading ? <span className="session-meta">读取中...</span> : null}
@@ -202,27 +202,26 @@ export function SessionSidebar({
               回到根目录
             </button>
           </div>
-          <select
-            value=""
-            onChange={(event) => {
-              const nextPath = event.target.value;
-              if (!nextPath) {
-                return;
-              }
-              setDirectoryBrowsePath(nextPath);
-              setCwd(nextPath);
-            }}
-          >
-            <option value="">{directoryOptions.length > 0 ? "点此选择当前层级的子目录" : "当前层级没有子目录"}</option>
+          <div className="directory-list" role="list">
             {directoryOptions.map((entry) => (
-              <option key={entry.path} value={entry.path}>
-                {entry.name}
-              </option>
+              <button
+                key={entry.path}
+                type="button"
+                className={`directory-item ${cwd === entry.path ? "active" : ""}`}
+                onClick={() => {
+                  setDirectoryBrowsePath(entry.path);
+                  setCwd(entry.path);
+                }}
+              >
+                <span className="directory-item-icon">DIR</span>
+                <span>{entry.name}</span>
+              </button>
             ))}
-          </select>
+            {directoryOptions.length === 0 ? <div className="session-meta">当前层级没有子目录。</div> : null}
+          </div>
           <input value={cwd} readOnly aria-label="选中的启动目录" />
           {directoryError ? <div className="error-banner">{directoryError}</div> : null}
-        </div>
+        </details>
         {mode !== "new" ? (
           <label>
             源 Codex Session

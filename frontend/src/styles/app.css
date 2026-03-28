@@ -180,12 +180,47 @@ code {
   padding: 0.85rem;
 }
 
+.directory-picker-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+  cursor: pointer;
+}
+
 .directory-picker-top {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.directory-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.directory-item {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  justify-content: flex-start;
+  background: rgba(11, 122, 91, 0.08);
+  color: var(--accent-strong);
+}
+
+.directory-item.active {
+  background: var(--accent);
+  color: #fffdf7;
+}
+
+.directory-item-icon {
+  font-size: 0.78rem;
+  border-radius: 999px;
+  padding: 0.18rem 0.45rem;
+  background: rgba(18, 34, 25, 0.12);
 }
 
 .inline-grid {
