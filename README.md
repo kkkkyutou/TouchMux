@@ -26,9 +26,12 @@ TouchMux turns your phone browser into a remote cockpit for terminal work. It is
 - Manage `tmux` / `Codex` from a phone browser
 - Create, resume, fork, and close persistent Codex sessions
 - Import existing Codex conversation indexes from `~/.codex/history.jsonl`
-- Browse controlled workspace roots and do basic file operations
+- Use the real Ubuntu working environment as the default root, with support for multiple allowed roots
+- Browse controlled roots, navigate with breadcrumbs, and jump to the active session directory
+- Edit and save text files directly in the browser
 - Click common terminal choices instead of relying only on arrow keys
 - Enforce goal-guarded auto-resume before a task is allowed to stop
+- Configure frontend dev port, backend port, and proxy targets
 - Expose health checks and config schema for deployment and extension
 
 ## Current Status
@@ -38,7 +41,7 @@ TouchMux is currently a self-hosted, single-user MVP. The main workflow is worki
 ## Not Yet Implemented
 
 - Multi-user accounts, roles, and permission isolation are not implemented yet.
-- Full in-browser file editing, upload, and download are not implemented yet.
+- File upload, download, binary preview, and richer in-browser editing are not implemented yet.
 - Choice clicking is still heuristic-based, not a full TUI semantic parser.
 - Goal guard is rule-based, not a true semantic task-completion judge.
 - Automatic recovery after backend restart is partial and still depends on real `tmux` state.
@@ -66,10 +69,23 @@ npm run dev:backend
 npm run dev:frontend
 ```
 
-4. Open the frontend and log in.
+4. Set the key ports and roots in `.env` if needed.
+
+```env
+TOUCHMUX_PORT=8787
+TOUCHMUX_FRONTEND_PORT=5173
+TOUCHMUX_BACKEND_ORIGIN=http://127.0.0.1:8787
+TOUCHMUX_BACKEND_WS_ORIGIN=ws://127.0.0.1:8787
+# Optional. If omitted, TouchMux uses the current Linux user's home directory.
+# TOUCHMUX_WORKSPACE_ROOTS=/home/your-user,/srv/shared
+```
+
+5. Open the frontend and log in.
 
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:8787`
+
+If you changed the ports above, use your configured values instead.
 
 ## Requirements
 
@@ -83,7 +99,14 @@ npm run dev:frontend
 - Backend can run as a single service process
 - Frontend builds to static assets
 - Cloudflare Tunnel or a reverse proxy is recommended
+- Do not expose `/` as a workspace root by default; prefer explicit roots such as `/home/your-user` or shared project paths
 - See [docs/01_technical_overview.md](./docs/01_technical_overview.md)
+
+## Open Source Safety Notes
+
+- `.env`, runtime SQLite files, `**/.data/`, and local autoresearch artifacts are git-ignored by default
+- This repository is intended for self-hosted use; review secrets, proxy settings, and allowed workspace roots before deployment
+- If you publish screenshots or demo recordings, avoid leaking real filesystem paths, shell history, or Codex session content
 
 ## Docker
 

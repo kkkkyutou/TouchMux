@@ -2,7 +2,10 @@ node_modules
 dist
 .DS_Store
 .env
+.env.local
+.env.*.local
 backend/.data
+**/.data/
 frontend/dist
 backend/dist
 npm-debug.log*
@@ -10,3 +13,9 @@ npm-debug.log*
 frontend/vite.config.js
 frontend/vite.config.d.ts
 docker-data
+*.sqlite
+*.sqlite-*
+*.db
+autoresearch-state.json
+research-results.tsv
+autoresearch-lessons.md

@@ -35,7 +35,7 @@ docker compose up --build
 
 当前 compose 方案主要解决以下问题：
 
-- 后端服务固定监听 `8787`
+- 后端服务默认监听 `8787`
 - 数据目录与工作区目录通过 volume 映射
 - 预留 `~/.codex` 只读挂载位
 
@@ -64,6 +64,9 @@ docker compose up --build
 - `TOUCHMUX_PASSWORD`
 - `TOUCHMUX_JWT_SECRET`
 - `TOUCHMUX_PORT`
+- `TOUCHMUX_FRONTEND_PORT`
+- `TOUCHMUX_BACKEND_ORIGIN`
+- `TOUCHMUX_BACKEND_WS_ORIGIN`
 - `TOUCHMUX_WORKSPACE_ROOTS`
 - `TOUCHMUX_DATA_DIR`
 - `TOUCHMUX_CODEX_COMMAND`
@@ -75,4 +78,5 @@ docker compose up --build
 
 - SQLite 数据位于 `TOUCHMUX_DATA_DIR`
 - 修改 `TOUCHMUX_WORKSPACE_ROOTS` 后即可迁移到新的目录布局
+- 更推荐显式配置 `/home/your-user`、共享项目目录等允许根目录，而不是直接开放整个 `/`
 - Codex 历史导入依赖 `~/.codex/history.jsonl`
