@@ -20,8 +20,8 @@ export function SystemPanel({ capabilities, configSchema }: SystemPanelProps) {
     <section className="panel system-panel">
       <div className="panel-header">
         <div>
-          <div className="eyebrow">系统</div>
-          <h2>环境与配置</h2>
+          <div className="eyebrow">状态</div>
+          <h2>运行信息</h2>
         </div>
       </div>
       {capabilities ? (

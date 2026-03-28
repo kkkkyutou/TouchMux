@@ -1,15 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { FileBrowser } from "./components/FileBrowser";
 import { GoalGuardEditor } from "./components/GoalGuardEditor";
 import { LoginScreen } from "./components/LoginScreen";
 import { SessionSidebar } from "./components/SessionSidebar";
-import { SystemPanel } from "./components/SystemPanel";
 import { TerminalPane } from "./components/TerminalPane";
 import {
   closeSession,
   createSession,
-  fetchCapabilities,
-  fetchConfigSchema,
   fetchHistory,
   fetchRoots,
   fetchSessions,
@@ -40,23 +37,8 @@ export default function App() {
   const [roots, setRoots] = useState<WorkspaceEntry[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [flashError, setFlashError] = useState<string | null>(null);
-  const [capabilities, setCapabilities] = useState<{
-    platform: string;
-    nodeVersion: string;
-    tmuxAvailable: boolean;
-    codexExecutable: string;
-    features: Record<string, boolean>;
-  } | null>(null);
-  const [configSchema, setConfigSchema] = useState<
-    Array<{
-      key: string;
-      required: boolean;
-      defaultValue: string | number | boolean | null;
-      example: string;
-      description: string;
-    }>
-  >([]);
   const senderRef = useRef<((text: string) => void) | null>(null);
+  const deferredSessionId = useDeferredValue(currentSessionId);
 
   const currentSession = useMemo(
     () => sessions.find((session) => session.id === currentSessionId) ?? null,
@@ -67,18 +49,14 @@ export default function App() {
     if (!token) {
       return;
     }
-    const [sessionItems, history, workspaceRoots, systemCapabilities, systemConfigSchema] = await Promise.all([
+    const [sessionItems, history, workspaceRoots] = await Promise.all([
       fetchSessions(token),
       fetchHistory(token),
       fetchRoots(token),
-      fetchCapabilities(token),
-      fetchConfigSchema(token),
     ]);
     setSessions(sessionItems);
     setHistoryItems(history);
     setRoots(workspaceRoots);
-    setCapabilities(systemCapabilities);
-    setConfigSchema(systemConfigSchema);
     if (!currentSessionId && sessionItems.length > 0) {
       setCurrentSessionId(sessionItems[0].id);
     }
@@ -187,7 +165,7 @@ export default function App() {
             <div className="terminal-stage">
               <TerminalPane
                 token={token}
-                sessionId={currentSessionId}
+                sessionId={deferredSessionId}
                 onReady={(sender) => {
                   senderRef.current = sender;
                 }}
@@ -239,7 +217,6 @@ export default function App() {
                 setSessions((current) => upsertSession(current, session));
               }}
             />
-            <SystemPanel capabilities={capabilities} configSchema={configSchema} />
           </div>
         </section>
       </section>
