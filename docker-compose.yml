@@ -1,0 +1,24 @@
+services:
+  touchmux:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: touchmux:local
+    ports:
+      - "8787:8787"
+    environment:
+      TOUCHMUX_PASSWORD: ${TOUCHMUX_PASSWORD:-change-me}
+      TOUCHMUX_JWT_SECRET: ${TOUCHMUX_JWT_SECRET:-change-this-secret}
+      TOUCHMUX_PORT: 8787
+      TOUCHMUX_HOST: 0.0.0.0
+      TOUCHMUX_DATA_DIR: /data
+      TOUCHMUX_WORKSPACE_ROOTS: /workspace
+      TOUCHMUX_CODEX_COMMAND: ${TOUCHMUX_CODEX_COMMAND:-codex --no-alt-screen}
+      TOUCHMUX_DEFAULT_SHELL: /bin/bash
+      TOUCHMUX_GOAL_GUARD_INTERVAL_MS: ${TOUCHMUX_GOAL_GUARD_INTERVAL_MS:-15000}
+      TOUCHMUX_IDLE_TIMEOUT_SEC: ${TOUCHMUX_IDLE_TIMEOUT_SEC:-90}
+    volumes:
+      - ./docker-data:/data
+      - ./:/workspace
+      - ${HOME}/.codex:/root/.codex:ro
+    restart: unless-stopped

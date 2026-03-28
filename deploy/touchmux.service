@@ -1,0 +1,16 @@
+[Unit]
+Description=TouchMux mobile remote workbench
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/touchmux
+EnvironmentFile=/opt/touchmux/.env
+ExecStart=/usr/bin/node /opt/touchmux/backend/dist/server.js
+Restart=always
+RestartSec=5
+User=touchmux
+Group=touchmux
+
+[Install]
+WantedBy=multi-user.target

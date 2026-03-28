@@ -1,0 +1,393 @@
+:root {
+  --bg: #f4efe3;
+  --bg-soft: #ece4d2;
+  --panel: rgba(255, 250, 240, 0.9);
+  --text: #122219;
+  --muted: #5f6d60;
+  --accent: #0b7a5b;
+  --accent-strong: #095741;
+  --danger: #b04d32;
+  --terminal: #101513;
+  --shadow: 0 18px 45px rgba(18, 34, 25, 0.13);
+  --radius: 24px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  font-family: "IBM Plex Sans", "Noto Sans SC", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(255, 208, 120, 0.3), transparent 24%),
+    linear-gradient(180deg, #fbf7ef 0%, #efe6d8 100%);
+  color: var(--text);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  border-radius: 16px;
+  background: var(--accent);
+  color: #fffdf7;
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid rgba(18, 34, 25, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 0.82rem 0.95rem;
+  color: var(--text);
+}
+
+textarea {
+  resize: vertical;
+}
+
+code {
+  background: rgba(11, 122, 91, 0.08);
+  padding: 0.1rem 0.35rem;
+  border-radius: 8px;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.login-card {
+  width: min(100%, 460px);
+  background: var(--panel);
+  border: 1px solid rgba(18, 34, 25, 0.08);
+  border-radius: 32px;
+  padding: 2rem;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px);
+}
+
+.login-card h1 {
+  margin: 0.5rem 0 0.75rem;
+  font-size: 2rem;
+}
+
+.login-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 1rem;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.topbar h1,
+.panel h2 {
+  margin: 0.2rem 0 0;
+}
+
+.main-grid {
+  display: grid;
+  grid-template-columns: minmax(310px, 380px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.secondary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid rgba(18, 34, 25, 0.08);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1rem;
+  backdrop-filter: blur(10px);
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.workbench {
+  display: grid;
+  gap: 1rem;
+}
+
+.session-sidebar,
+.file-browser,
+.goal-panel,
+.system-panel {
+  min-height: 24rem;
+}
+
+.session-create-form,
+.session-list,
+.file-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.inline-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.session-card {
+  border: 1px solid rgba(18, 34, 25, 0.08);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.6);
+  padding: 0.95rem;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease;
+}
+
+.session-card.active {
+  border-color: rgba(11, 122, 91, 0.45);
+  transform: translateY(-2px);
+}
+
+.session-card-top,
+.session-actions,
+.terminal-metadata,
+.file-actions,
+.file-entry-actions,
+.overlay-actions,
+.mobile-quickbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.session-meta,
+.session-preview {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 0.45rem;
+}
+
+.status-pill {
+  border-radius: 999px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.78rem;
+  background: rgba(11, 122, 91, 0.12);
+  color: var(--accent-strong);
+}
+
+.status-closed,
+.status-failed_check {
+  background: rgba(176, 77, 50, 0.12);
+  color: var(--danger);
+}
+
+.terminal-panel {
+  padding-bottom: 0.5rem;
+}
+
+.terminal-stage {
+  position: relative;
+  border-radius: 24px;
+  overflow: hidden;
+  background: var(--terminal);
+  min-height: 25rem;
+}
+
+.terminal-host {
+  height: 60vh;
+  min-height: 25rem;
+  padding: 0.65rem;
+  touch-action: pan-y;
+}
+
+.choice-overlay {
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  background: rgba(13, 21, 18, 0.84);
+  border: 1px solid rgba(255, 184, 77, 0.28);
+  border-radius: 20px;
+  padding: 0.75rem;
+  backdrop-filter: blur(10px);
+}
+
+.overlay-title {
+  color: #f8e3b6;
+  font-size: 0.88rem;
+  margin-bottom: 0.5rem;
+}
+
+.choice-overlay button {
+  background: #f3b654;
+  color: #2e1d05;
+}
+
+.file-toolbar,
+.toggle-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.85rem;
+}
+
+.toggle-row input {
+  width: auto;
+}
+
+.file-entry {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+  border: 1px solid rgba(18, 34, 25, 0.08);
+  border-radius: 16px;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.file-entry-main {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  width: auto;
+}
+
+.file-preview {
+  margin-top: 1rem;
+  min-height: 10rem;
+  background: rgba(248, 245, 236, 0.9);
+}
+
+.system-summary,
+.config-schema-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.schema-card {
+  border: 1px solid rgba(18, 34, 25, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.62);
+  padding: 0.85rem;
+}
+
+.schema-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.status-optional {
+  background: rgba(18, 34, 25, 0.08);
+  color: var(--muted);
+}
+
+.ghost-button {
+  background: rgba(11, 122, 91, 0.1);
+  color: var(--accent-strong);
+}
+
+.ghost-button.danger {
+  background: rgba(176, 77, 50, 0.12);
+  color: var(--danger);
+}
+
+.error-banner,
+.flash-banner {
+  background: rgba(176, 77, 50, 0.12);
+  color: var(--danger);
+  border-radius: 16px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.empty-panel {
+  display: grid;
+  place-items: center;
+}
+
+@media (max-width: 1100px) {
+  .main-grid,
+  .secondary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .terminal-host {
+    height: 52vh;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    padding: 0.75rem;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .inline-grid,
+  .file-toolbar {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .panel {
+    border-radius: 22px;
+    padding: 0.9rem;
+  }
+
+  .terminal-host {
+    min-height: 20rem;
+    height: 48vh;
+  }
+}
