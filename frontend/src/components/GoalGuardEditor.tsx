@@ -142,7 +142,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
             disabled={saving}
             onClick={() => {
               setSaving(true);
-              void updateGoalGuard(token, session.id, form)
+              void updateGoalGuard(token, session.nodeId, session.id, form)
                 .then((updated) => onUpdated(updated))
                 .finally(() => setSaving(false));
             }}

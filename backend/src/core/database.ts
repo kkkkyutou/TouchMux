@@ -6,9 +6,20 @@ const databasePath = path.join(config.dataDir, "touchmux.sqlite");
 
 export const db = new DatabaseSync(databasePath);
 
+function ensureColumn(tableName: string, columnName: string, statement: string): void {
+  const columns = db
+    .prepare(`PRAGMA table_info(${tableName})`)
+    .all()
+    .map((row) => String((row as Record<string, unknown>).name));
+  if (!columns.includes(columnName)) {
+    db.exec(statement);
+  }
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS managed_sessions (
     id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL DEFAULT 'local',
     title TEXT NOT NULL,
     mode TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -26,6 +37,12 @@ db.exec(`
     goal_config_json TEXT NOT NULL
   );
 `);
+
+ensureColumn(
+  "managed_sessions",
+  "node_id",
+  "ALTER TABLE managed_sessions ADD COLUMN node_id TEXT NOT NULL DEFAULT 'local';",
+);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS audit_logs (

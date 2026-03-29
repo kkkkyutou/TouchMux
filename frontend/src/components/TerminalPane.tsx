@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPaneProps {
   token: string;
+  nodeId: string | null;
   sessionId: string | null;
   onReady: (sender: ((text: string) => void) | null) => void;
   onError: (message: string) => void;
@@ -23,7 +24,7 @@ function resolveTerminalFontSize(): number {
   return 14;
 }
 
-export function TerminalPane({ token, sessionId, onReady, onError }: TerminalPaneProps) {
+export function TerminalPane({ token, nodeId, sessionId, onReady, onError }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -95,7 +96,7 @@ export function TerminalPane({ token, sessionId, onReady, onError }: TerminalPan
     socketRef.current?.close();
     onReady(null);
 
-    if (!sessionId) {
+    if (!sessionId || !nodeId) {
       terminal.writeln("请选择左侧会话，或新建一个 Codex/tmux 会话。");
       return;
     }
@@ -105,7 +106,7 @@ export function TerminalPane({ token, sessionId, onReady, onError }: TerminalPan
     const socket = new WebSocket(
       `${protocol}://${location.host}/ws/terminal?token=${encodeURIComponent(token)}&sessionId=${encodeURIComponent(
         sessionId,
-      )}&cols=${terminal.cols}&rows=${terminal.rows}`,
+      )}&nodeId=${encodeURIComponent(nodeId)}&cols=${terminal.cols}&rows=${terminal.rows}`,
     );
     socketRef.current = socket;
 
@@ -145,7 +146,7 @@ export function TerminalPane({ token, sessionId, onReady, onError }: TerminalPan
       disposable.dispose();
       socket.close();
     };
-  }, [sessionId, token, onReady, onError]);
+  }, [sessionId, nodeId, token, onReady, onError]);
 
   return <div ref={hostRef} className="terminal-host" />;
 }

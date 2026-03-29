@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { db } from "../core/database.js";
+import { config } from "../core/config.js";
 import type {
   GoalGuardConfig,
   GoalState,
@@ -20,6 +21,7 @@ const defaultGoalConfig = {
 function mapRow(row: Record<string, unknown>): ManagedSessionRecord {
   return {
     id: String(row.id),
+    nodeId: row.node_id ? String(row.node_id) : config.localNode.id,
     title: String(row.title),
     mode: row.mode as ManagedSessionRecord["mode"],
     status: row.status as SessionStatus,
@@ -72,13 +74,14 @@ export class SessionRepository {
     };
     const statement = db.prepare(`
       INSERT INTO managed_sessions (
-        id, title, mode, status, cwd, workspace_root, tmux_session_name,
+        id, node_id, title, mode, status, cwd, workspace_root, tmux_session_name,
         source_codex_session_id, prompt, command, created_at, updated_at,
         last_output_at, last_output_preview, goal_state, goal_config_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     statement.run(
       record.id,
+      record.nodeId,
       record.title,
       record.mode,
       record.status,

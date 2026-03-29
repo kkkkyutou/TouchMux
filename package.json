@@ -7,9 +7,15 @@
     "frontend"
   ],
   "scripts": {
-    "dev": "node scripts/dev.mjs",
+    "dev": "node scripts/dev.mjs --mode=single",
+    "dev:single": "node scripts/dev.mjs --mode=single",
+    "dev:hub": "node scripts/dev.mjs --mode=hub",
+    "dev:node": "node scripts/dev.mjs --mode=node",
     "dev:backend": "npm run dev -w backend",
     "dev:frontend": "npm run dev -w frontend",
+    "check:config": "node scripts/check-config.mjs",
+    "smoke:single": "node scripts/smoke-single.mjs",
+    "smoke:hub-node": "node scripts/smoke-hub-node.mjs",
     "build": "npm run build -w backend && npm run build -w frontend",
     "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend"
   }

@@ -1,3 +1,5 @@
+export type RuntimeMode = "single" | "hub" | "node";
+
 export type SessionMode = "new" | "resume" | "fork";
 
 export type SessionStatus =
@@ -44,6 +46,8 @@ export interface ChoiceOverlay {
 
 export interface SessionSummary {
   id: string;
+  nodeId: string;
+  nodeLabel: string;
   title: string;
   mode: SessionMode;
   status: SessionStatus;
@@ -74,6 +78,17 @@ export interface HistoryConversationSummary {
 export interface WorkspaceEntry {
   rootPath: string;
   label: string;
+}
+
+export interface NodeSummary {
+  id: string;
+  label: string;
+  baseUrl: string;
+  status: "online" | "offline";
+  runtimeMode: RuntimeMode | "unknown";
+  roots: WorkspaceEntry[];
+  error: string | null;
+  lastCheckedAt: number;
 }
 
 export interface FileEntry {

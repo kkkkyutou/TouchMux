@@ -1,3 +1,5 @@
+export type RuntimeMode = "single" | "hub" | "node";
+
 export type SessionMode = "new" | "resume" | "fork";
 
 export type SessionStatus =
@@ -44,6 +46,7 @@ export interface ChoiceOverlay {
 
 export interface ManagedSessionRecord {
   id: string;
+  nodeId: string;
   title: string;
   mode: SessionMode;
   status: SessionStatus;
@@ -62,6 +65,7 @@ export interface ManagedSessionRecord {
 }
 
 export interface SessionSummary extends ManagedSessionRecord {
+  nodeLabel: string;
   hasTmuxSession: boolean;
   choiceOverlay: ChoiceOverlay;
 }
@@ -86,6 +90,24 @@ export interface HistoryConversationSummary {
 export interface WorkspaceEntry {
   rootPath: string;
   label: string;
+}
+
+export interface NodeConfigEntry {
+  id: string;
+  label: string;
+  baseUrl: string;
+  sharedSecret?: string;
+}
+
+export interface NodeSummary {
+  id: string;
+  label: string;
+  baseUrl: string;
+  status: "online" | "offline";
+  runtimeMode: RuntimeMode | "unknown";
+  roots: WorkspaceEntry[];
+  error: string | null;
+  lastCheckedAt: number;
 }
 
 export interface FileEntry {

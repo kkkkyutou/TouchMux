@@ -327,6 +327,15 @@ code {
   padding: 0.85rem;
 }
 
+.node-picker {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid rgba(18, 34, 25, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.58);
+  padding: 0.78rem 0.85rem;
+}
+
 .directory-picker-summary,
 .panel-toggle-title {
   display: flex;
@@ -380,6 +389,17 @@ code {
   display: flex;
   gap: 0.4rem;
   flex-wrap: wrap;
+}
+
+.path-suggestion-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.path-suggestion-button {
+  justify-content: flex-start;
+  text-align: left;
+  padding: 0.52rem 0.72rem;
 }
 
 .compact-button {
@@ -571,6 +591,20 @@ code {
   min-height: 18rem;
   padding: 0.65rem;
   touch-action: pan-y;
+}
+
+.terminal-loading-state,
+.loading-panel {
+  display: grid;
+  place-items: center;
+  min-height: 8rem;
+  color: var(--muted);
+}
+
+.terminal-loading-state {
+  min-height: 100%;
+  background: rgba(16, 21, 19, 0.92);
+  color: rgba(241, 239, 230, 0.82);
 }
 
 .choice-overlay {

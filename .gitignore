@@ -17,5 +17,8 @@ docker-data
 *.sqlite-*
 *.db
 autoresearch-state.json
+autoresearch-state.prev.json
 research-results.tsv
+research-results.prev.tsv
 autoresearch-lessons.md
+autoresearch-lessons.prev.md

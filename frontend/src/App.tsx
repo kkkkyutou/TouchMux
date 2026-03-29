@@ -1,22 +1,31 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { FileBrowser } from "./components/FileBrowser";
-import { GoalGuardEditor } from "./components/GoalGuardEditor";
+import { Suspense, lazy, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { LoginScreen } from "./components/LoginScreen";
 import { SessionSidebar } from "./components/SessionSidebar";
-import { TerminalPane } from "./components/TerminalPane";
 import {
   closeSession,
   createSession,
   fetchHistory,
-  fetchRoots,
+  fetchNodes,
   fetchSessions,
   login,
   overrideStop,
 } from "./lib/api";
 import { useEventSocket } from "./hooks/useEventSocket";
-import type { HistoryConversationSummary, SessionSummary, WorkspaceEntry } from "./types/api";
+import type { HistoryConversationSummary, NodeSummary, SessionSummary } from "./types/api";
 
 const TOKEN_STORAGE_KEY = "touchmux-token";
+const TerminalPane = lazy(async () => {
+  const module = await import("./components/TerminalPane");
+  return { default: module.TerminalPane };
+});
+const FileBrowser = lazy(async () => {
+  const module = await import("./components/FileBrowser");
+  return { default: module.FileBrowser };
+});
+const GoalGuardEditor = lazy(async () => {
+  const module = await import("./components/GoalGuardEditor");
+  return { default: module.GoalGuardEditor };
+});
 
 function upsertSession(list: SessionSummary[], next: SessionSummary): SessionSummary[] {
   const existing = list.findIndex((item) => item.id === next.id);
@@ -33,8 +42,9 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [nodes, setNodes] = useState<NodeSummary[]>([]);
   const [historyItems, setHistoryItems] = useState<HistoryConversationSummary[]>([]);
-  const [roots, setRoots] = useState<WorkspaceEntry[]>([]);
+  const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [flashError, setFlashError] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -53,6 +63,14 @@ export default function App() {
     () => sessions.find((session) => session.id === currentSessionId) ?? null,
     [sessions, currentSessionId],
   );
+  const currentNode = useMemo(
+    () => nodes.find((node) => node.id === (currentSession?.nodeId ?? currentNodeId)) ?? null,
+    [nodes, currentNodeId, currentSession?.nodeId],
+  );
+  const sidebarNode = useMemo(
+    () => nodes.find((node) => node.id === currentNodeId) ?? null,
+    [nodes, currentNodeId],
+  );
   const handleTerminalReady = useCallback((sender: ((text: string) => void) | null) => {
     senderRef.current = sender;
   }, []);
@@ -64,14 +82,15 @@ export default function App() {
     if (!token) {
       return;
     }
-    const [sessionItems, history, workspaceRoots] = await Promise.all([
-      fetchSessions(token),
-      fetchHistory(token),
-      fetchRoots(token),
-    ]);
+    const [sessionItems, nodeItems] = await Promise.all([fetchSessions(token), fetchNodes(token)]);
     setSessions(sessionItems);
-    setHistoryItems(history);
-    setRoots(workspaceRoots);
+    setNodes(nodeItems);
+    setCurrentNodeId((current) => {
+      if (current && nodeItems.some((node) => node.id === current)) {
+        return current;
+      }
+      return nodeItems[0]?.id ?? null;
+    });
     setCurrentSessionId((current) => reconcileSelectedSessionId(sessionItems, current));
   }, [token, reconcileSelectedSessionId]);
 
@@ -83,6 +102,26 @@ export default function App() {
       setFlashError(error instanceof Error ? error.message : "初始化失败");
     });
   }, [token, refreshAll]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void fetchNodes(token)
+        .then((items) => {
+          setNodes(items);
+          setCurrentNodeId((current) => {
+            if (current && items.some((node) => node.id === current)) {
+              return current;
+            }
+            return items[0]?.id ?? null;
+          });
+        })
+        .catch(() => undefined);
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [token]);
 
   useEventSocket(
     token,
@@ -98,6 +137,19 @@ export default function App() {
       });
     }, [reconcileSelectedSessionId]),
   );
+
+  useEffect(() => {
+    if (!token || !currentNodeId) {
+      setHistoryItems([]);
+      return;
+    }
+    void fetchHistory(token, currentNodeId)
+      .then((items) => setHistoryItems(items))
+      .catch((error) => {
+        setHistoryItems([]);
+        setFlashError(error instanceof Error ? error.message : "读取历史会话失败");
+      });
+  }, [token, currentNodeId]);
 
   async function handleLogin(password: string): Promise<void> {
     try {
@@ -159,6 +211,8 @@ export default function App() {
               localStorage.removeItem(TOKEN_STORAGE_KEY);
               setToken(null);
               setSessions([]);
+              setNodes([]);
+              setCurrentNodeId(null);
               setCurrentSessionId(null);
             }}
           >
@@ -179,6 +233,8 @@ export default function App() {
               localStorage.removeItem(TOKEN_STORAGE_KEY);
               setToken(null);
               setSessions([]);
+              setNodes([]);
+              setCurrentNodeId(null);
               setCurrentSessionId(null);
             }}
           >
@@ -195,9 +251,11 @@ export default function App() {
             <div>
               <div className="eyebrow">控制台</div>
               <h2>{currentSession?.title ?? "未选择会话"}</h2>
+              {currentNode ? <div className="session-meta">节点：{currentNode.label}</div> : null}
             </div>
             {currentSession ? (
               <div className="terminal-metadata">
+                <span>{currentSession.nodeLabel}</span>
                 <span>{currentSession.status}</span>
                 <span>{currentSession.cwd}</span>
               </div>
@@ -213,12 +271,15 @@ export default function App() {
           ) : (
             <>
               <div className="terminal-stage">
-                <TerminalPane
-                  token={token}
-                  sessionId={deferredSessionId}
-                  onReady={handleTerminalReady}
-                  onError={handleTerminalError}
-                />
+                <Suspense fallback={<div className="terminal-loading-state">终端组件加载中...</div>}>
+                  <TerminalPane
+                    token={token}
+                    nodeId={currentSession?.nodeId ?? null}
+                    sessionId={deferredSessionId}
+                    onReady={handleTerminalReady}
+                    onError={handleTerminalError}
+                  />
+                </Suspense>
                 {currentSession.choiceOverlay.visible ? (
                   <div className="choice-overlay">
                     <div className="overlay-title">检测到可点击选择项</div>
@@ -258,12 +319,15 @@ export default function App() {
           )}
         </div>
 
-        <FileBrowser
-          token={token}
-          roots={roots}
-          activeSessionCwd={currentSession?.cwd ?? null}
-          activeSessionRoot={currentSession?.workspaceRoot ?? null}
-        />
+        <Suspense fallback={<section className="panel browser-dock loading-panel">文件管理组件加载中...</section>}>
+          <FileBrowser
+            token={token}
+            nodeId={currentSession?.nodeId ?? currentNodeId}
+            roots={currentNode?.roots ?? []}
+            activeSessionCwd={currentSession?.cwd ?? null}
+            activeSessionRoot={currentSession?.workspaceRoot ?? null}
+          />
+        </Suspense>
       </section>
 
       <div className={`drawer-backdrop ${drawerOpen ? "open" : ""}`} onClick={() => setDrawerOpen(false)} />
@@ -286,11 +350,19 @@ export default function App() {
         <div className="session-drawer-scroll">
           <SessionSidebar
             token={token}
+            nodes={nodes}
             sessions={sessions}
             historyItems={historyItems}
-            roots={roots}
+            currentNodeId={currentNodeId}
             currentSessionId={currentSessionId}
-            onSelectSession={setCurrentSessionId}
+            onSelectNode={setCurrentNodeId}
+            onSelectSession={(sessionId) => {
+              const session = sessions.find((item) => item.id === sessionId);
+              if (session) {
+                setCurrentNodeId(session.nodeId);
+              }
+              setCurrentSessionId(sessionId);
+            }}
             onCloseDrawer={() => setDrawerOpen(false)}
             onCreateSession={async (payload) => {
               const created = await createSession(token, payload);
@@ -298,18 +370,19 @@ export default function App() {
                 const next = upsertSession(current, created);
                 return next;
               });
+              setCurrentNodeId(created.nodeId);
               await refreshAll();
             }}
-            onCloseSession={async (sessionId) => {
-              const updated = await closeSession(token, sessionId, false);
+            onCloseSession={async (sessionId, nodeId) => {
+              const updated = await closeSession(token, sessionId, nodeId, false);
               setSessions((current) => {
                 const next = upsertSession(current, updated);
                 setCurrentSessionId((selected) => reconcileSelectedSessionId(next, selected));
                 return next;
               });
             }}
-            onForceCloseSession={async (sessionId) => {
-              const updated = await overrideStop(token, sessionId);
+            onForceCloseSession={async (sessionId, nodeId) => {
+              const updated = await overrideStop(token, sessionId, nodeId);
               setSessions((current) => {
                 const next = upsertSession(current, updated);
                 setCurrentSessionId((selected) => reconcileSelectedSessionId(next, selected));
@@ -317,13 +390,15 @@ export default function App() {
               });
             }}
           />
-          <GoalGuardEditor
-            token={token}
-            session={currentSession}
-            onUpdated={(session) => {
-              setSessions((current) => upsertSession(current, session));
-            }}
-          />
+          <Suspense fallback={<section className="panel goal-panel loading-panel">Goal Guard 组件加载中...</section>}>
+            <GoalGuardEditor
+              token={token}
+              session={currentSession}
+              onUpdated={(session) => {
+                setSessions((current) => upsertSession(current, session));
+              }}
+            />
+          </Suspense>
         </div>
       </aside>
     </main>

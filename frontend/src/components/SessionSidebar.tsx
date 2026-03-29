@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { listDirectory } from "../lib/api";
-import type { FileEntry, HistoryConversationSummary, SessionMode, SessionSummary, WorkspaceEntry } from "../types/api";
+import type { FileEntry, HistoryConversationSummary, NodeSummary, SessionMode, SessionSummary } from "../types/api";
 
 interface SessionSidebarProps {
   token: string;
+  nodes: NodeSummary[];
   sessions: SessionSummary[];
   historyItems: HistoryConversationSummary[];
-  roots: WorkspaceEntry[];
+  currentNodeId: string | null;
+  onSelectNode: (nodeId: string) => void;
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onCloseDrawer: () => void;
   onCreateSession: (payload: {
+    nodeId: string;
     title: string;
     workspaceRoot: string;
     cwd: string;
@@ -18,8 +21,8 @@ interface SessionSidebarProps {
     prompt?: string;
     sourceCodexSessionId?: string;
   }) => Promise<void>;
-  onCloseSession: (sessionId: string) => Promise<void>;
-  onForceCloseSession: (sessionId: string) => Promise<void>;
+  onCloseSession: (sessionId: string, nodeId: string) => Promise<void>;
+  onForceCloseSession: (sessionId: string, nodeId: string) => Promise<void>;
 }
 
 function formatDirectoryLabel(rootLabel: string, relativePath: string): string {
@@ -74,11 +77,65 @@ function parsePathInput(input: string, workspaceRoot: string, rootLabel: string)
   return normalizeRelativePath(trimmed);
 }
 
+function parsePathDraftForSuggestions(
+  input: string,
+  workspaceRoot: string,
+  rootLabel: string,
+): { basePath: string; partialName: string } | null {
+  const trimmed = input.trim().replace(/\\/g, "/");
+  const displayPrefix = rootLabel.startsWith("Home") ? "~" : rootLabel;
+  let relativeDraft = trimmed;
+
+  if (!relativeDraft || relativeDraft === displayPrefix || relativeDraft === `${displayPrefix}/`) {
+    return { basePath: ".", partialName: "" };
+  }
+  if (displayPrefix === "~" && (relativeDraft === "~" || relativeDraft === "~/")) {
+    return { basePath: ".", partialName: "" };
+  }
+  if (displayPrefix === "~" && relativeDraft.startsWith("~/")) {
+    relativeDraft = relativeDraft.slice(2);
+  } else if (relativeDraft.startsWith(`${displayPrefix}/`)) {
+    relativeDraft = relativeDraft.slice(displayPrefix.length + 1);
+  } else if (relativeDraft === workspaceRoot || relativeDraft === `${workspaceRoot}/`) {
+    return { basePath: ".", partialName: "" };
+  } else if (relativeDraft.startsWith(`${workspaceRoot}/`)) {
+    relativeDraft = relativeDraft.slice(workspaceRoot.length + 1);
+  } else if (relativeDraft.startsWith("/")) {
+    return null;
+  }
+
+  const compact = relativeDraft.replace(/\/+/g, "/");
+  if (!compact) {
+    return { basePath: ".", partialName: "" };
+  }
+  const normalized = compact.replace(/^\.?\//, "");
+  if (!normalized) {
+    return { basePath: ".", partialName: "" };
+  }
+  if (normalized.endsWith("/")) {
+    return {
+      basePath: normalizeRelativePath(normalized),
+      partialName: "",
+    };
+  }
+
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex === -1) {
+    return { basePath: ".", partialName: normalized };
+  }
+  return {
+    basePath: normalizeRelativePath(normalized.slice(0, slashIndex)),
+    partialName: normalized.slice(slashIndex + 1),
+  };
+}
+
 export function SessionSidebar({
   token,
+  nodes,
   sessions,
   historyItems,
-  roots,
+  currentNodeId,
+  onSelectNode,
   currentSessionId,
   onSelectSession,
   onCloseDrawer,
@@ -88,10 +145,12 @@ export function SessionSidebar({
 }: SessionSidebarProps) {
   const [title, setTitle] = useState("");
   const [mode, setMode] = useState<SessionMode>("new");
-  const [workspaceRoot, setWorkspaceRoot] = useState(roots[0]?.rootPath ?? "");
+  const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [directoryPath, setDirectoryPath] = useState(".");
   const [childDirectories, setChildDirectories] = useState<FileEntry[]>([]);
   const [pathDraft, setPathDraft] = useState("");
+  const [pathSuggestions, setPathSuggestions] = useState<FileEntry[]>([]);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -101,7 +160,15 @@ export function SessionSidebar({
   const [showCreateForm, setShowCreateForm] = useState(false);
 
   const historyOptions = useMemo(() => historyItems.slice(0, 20), [historyItems]);
-  const liveSessions = useMemo(() => sessions.filter((session) => session.hasTmuxSession), [sessions]);
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === currentNodeId) ?? null,
+    [nodes, currentNodeId],
+  );
+  const roots = selectedNode?.roots ?? [];
+  const liveSessions = useMemo(
+    () => sessions.filter((session) => session.hasTmuxSession && session.nodeId === currentNodeId),
+    [sessions, currentNodeId],
+  );
   const rootLabelMap = useMemo(
     () => new Map(roots.map((root) => [root.rootPath, root.label])),
     [roots],
@@ -114,7 +181,11 @@ export function SessionSidebar({
   const selectedDirectoryLabel = formatDirectoryLabel(selectedRootLabel, cwd);
 
   useEffect(() => {
-    if (roots.length > 0 && !workspaceRoot) {
+    if (roots.length === 0) {
+      setWorkspaceRoot("");
+      return;
+    }
+    if (!workspaceRoot || !roots.some((root) => root.rootPath === workspaceRoot)) {
       setWorkspaceRoot(roots[0].rootPath);
     }
   }, [roots, workspaceRoot]);
@@ -130,14 +201,15 @@ export function SessionSidebar({
   }, [selectedDirectoryLabel]);
 
   useEffect(() => {
-    if (!token || !workspaceRoot || !showCreateForm) {
+    if (!token || !currentNodeId || !workspaceRoot || !showCreateForm) {
       return;
     }
     let cancelled = false;
+    const nodeId = currentNodeId;
     async function loadCurrentDirectories(): Promise<void> {
       try {
         setDirectoryLoading(true);
-        const items = await listDirectory(token, workspaceRoot, cwd);
+        const items = await listDirectory(token, nodeId, workspaceRoot, cwd);
         if (cancelled) {
           return;
         }
@@ -159,7 +231,62 @@ export function SessionSidebar({
     return () => {
       cancelled = true;
     };
-  }, [token, workspaceRoot, cwd, showCreateForm]);
+  }, [token, currentNodeId, workspaceRoot, cwd, showCreateForm]);
+
+  useEffect(() => {
+    if (!token || !currentNodeId || !workspaceRoot || !showCreateForm) {
+      return;
+    }
+    const context = parsePathDraftForSuggestions(pathDraft, workspaceRoot, selectedRootLabel);
+    if (!context) {
+      setPathSuggestions([]);
+      setSuggestionLoading(false);
+      return;
+    }
+    const suggestionContext = context;
+    let cancelled = false;
+    const nodeId = currentNodeId;
+    async function loadSuggestions(): Promise<void> {
+      try {
+        setSuggestionLoading(true);
+        const items = await listDirectory(token, nodeId, workspaceRoot, suggestionContext.basePath);
+        if (cancelled) {
+          return;
+        }
+        const next = items
+          .filter((entry) => entry.type === "directory")
+          .filter((entry) =>
+            suggestionContext.partialName
+              ? entry.name.toLowerCase().includes(suggestionContext.partialName.toLowerCase())
+              : true,
+          )
+          .slice(0, 8);
+        setPathSuggestions(next);
+      } catch {
+        if (!cancelled) {
+          setPathSuggestions([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setSuggestionLoading(false);
+        }
+      }
+    }
+    void loadSuggestions();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, currentNodeId, workspaceRoot, pathDraft, selectedRootLabel, showCreateForm]);
+
+  function applyPathDraft(): void {
+    try {
+      const nextPath = parsePathInput(pathDraft, workspaceRoot, selectedRootLabel);
+      setDirectoryPath(nextPath);
+      setDirectoryError(null);
+    } catch (error) {
+      setDirectoryError(error instanceof Error ? error.message : "路径无效");
+    }
+  }
 
   function resetCreateForm(): void {
     setTitle("");
@@ -180,6 +307,26 @@ export function SessionSidebar({
           <h2>管理终端</h2>
           <div className="session-meta">默认控制台保持空白，只有你手动选择某个终端后才显示对应内容。</div>
         </div>
+      </div>
+
+      <div className="node-picker">
+        <div className="directory-picker-summary">
+          <strong>当前机器</strong>
+          {selectedNode ? <span className="session-meta">{selectedNode.status === "online" ? "在线" : "离线"}</span> : null}
+        </div>
+        <select
+          value={currentNodeId ?? ""}
+          onChange={(event) => {
+            onSelectNode(event.target.value);
+          }}
+        >
+          {nodes.map((node) => (
+            <option key={node.id} value={node.id}>
+              {node.label} · {node.status === "online" ? "在线" : "离线"}
+            </option>
+          ))}
+        </select>
+        {selectedNode?.error ? <div className="session-meta">{selectedNode.error}</div> : null}
       </div>
 
       <div className="session-list">
@@ -207,7 +354,7 @@ export function SessionSidebar({
                 type="button"
                 className="ghost-button danger"
                 onClick={() => {
-                  void onForceCloseSession(session.id);
+                  void onForceCloseSession(session.id, session.nodeId);
                 }}
               >
                 删除
@@ -247,7 +394,13 @@ export function SessionSidebar({
               event.preventDefault();
               setSubmitting(true);
               setSubmitError(null);
+              if (!currentNodeId) {
+                setSubmitError("请先选择一个节点");
+                setSubmitting(false);
+                return;
+              }
               void onCreateSession({
+                nodeId: currentNodeId,
                 title: title || `${mode === "new" ? "新建" : mode === "resume" ? "恢复" : "Fork"} 会话`,
                 workspaceRoot,
                 cwd,
@@ -282,7 +435,7 @@ export function SessionSidebar({
             </label>
             <label>
               工作根目录
-              <select value={workspaceRoot} onChange={(event) => setWorkspaceRoot(event.target.value)}>
+              <select value={workspaceRoot} onChange={(event) => setWorkspaceRoot(event.target.value)} disabled={roots.length === 0}>
                 {roots.map((root) => (
                   <option key={root.rootPath} value={root.rootPath}>
                     {root.label}
@@ -304,13 +457,7 @@ export function SessionSidebar({
                       return;
                     }
                     event.preventDefault();
-                    try {
-                      const nextPath = parsePathInput(pathDraft, workspaceRoot, selectedRootLabel);
-                      setDirectoryPath(nextPath);
-                      setDirectoryError(null);
-                    } catch (error) {
-                      setDirectoryError(error instanceof Error ? error.message : "路径无效");
-                    }
+                    applyPathDraft();
                   }}
                   aria-label="启动目录路径"
                   placeholder={formatDirectoryLabel(selectedRootLabel, ".")}
@@ -319,18 +466,31 @@ export function SessionSidebar({
                   type="button"
                   className="ghost-button compact-button"
                   onClick={() => {
-                    try {
-                      const nextPath = parsePathInput(pathDraft, workspaceRoot, selectedRootLabel);
-                      setDirectoryPath(nextPath);
-                      setDirectoryError(null);
-                    } catch (error) {
-                      setDirectoryError(error instanceof Error ? error.message : "路径无效");
-                    }
+                    applyPathDraft();
                   }}
                 >
                   打开
                 </button>
               </div>
+              {!suggestionLoading && pathSuggestions.length === 0 ? null : (
+                <div className="path-suggestion-list">
+                  {suggestionLoading ? <span className="session-meta">路径建议读取中...</span> : null}
+                  {pathSuggestions.map((entry) => (
+                    <button
+                      key={entry.path}
+                      type="button"
+                      className="ghost-button path-suggestion-button"
+                      onClick={() => {
+                        setDirectoryPath(entry.path);
+                        setPathDraft(formatDirectoryLabel(selectedRootLabel, entry.path));
+                        setDirectoryError(null);
+                      }}
+                    >
+                      {formatDirectoryLabel(selectedRootLabel, entry.path)}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="directory-picker-top">
                 <span className="session-meta">可以直接输入完整路径，例如 {formatDirectoryLabel(selectedRootLabel, "projects")}。</span>
               </div>

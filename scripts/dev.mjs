@@ -1,10 +1,16 @@
 import { spawn } from "node:child_process";
 
+const modeArg = process.argv.find((item) => item.startsWith("--mode="));
+const runtimeMode = modeArg?.split("=")[1] ?? "single";
+
 function start(name, color, command, args) {
   const child = spawn(command, args, {
     stdio: ["inherit", "pipe", "pipe"],
     shell: false,
-    env: process.env,
+    env: {
+      ...process.env,
+      TOUCHMUX_RUNTIME_MODE: runtimeMode,
+    },
   });
 
   const prefix = `\x1b[${color}m[${name}]\x1b[0m`;

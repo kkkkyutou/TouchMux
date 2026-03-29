@@ -2,6 +2,7 @@ import type {
   FileEntry,
   GoalGuardConfig,
   HistoryConversationSummary,
+  NodeSummary,
   SessionSummary,
   WorkspaceEntry,
 } from "../types/api";
@@ -43,9 +44,15 @@ export async function fetchSessions(token: string): Promise<SessionSummary[]> {
   return data.items;
 }
 
+export async function fetchNodes(token: string): Promise<NodeSummary[]> {
+  const data = await request<{ items: NodeSummary[] }>("/api/nodes", token);
+  return data.items;
+}
+
 export async function createSession(
   token: string,
   payload: {
+    nodeId: string;
     title: string;
     workspaceRoot: string;
     cwd: string;
@@ -60,41 +67,49 @@ export async function createSession(
   });
 }
 
-export async function closeSession(token: string, sessionId: string, force = false): Promise<SessionSummary> {
+export async function closeSession(
+  token: string,
+  sessionId: string,
+  nodeId: string,
+  force = false,
+): Promise<SessionSummary> {
   return request<SessionSummary>(`/api/session/${sessionId}/close`, token, {
     method: "POST",
-    body: JSON.stringify({ force }),
+    body: JSON.stringify({ nodeId, force }),
   });
 }
 
-export async function fetchHistory(token: string): Promise<HistoryConversationSummary[]> {
-  const data = await request<{ items: HistoryConversationSummary[] }>("/api/codex/history", token);
+export async function fetchHistory(token: string, nodeId?: string): Promise<HistoryConversationSummary[]> {
+  const query = nodeId ? `?${new URLSearchParams({ nodeId }).toString()}` : "";
+  const data = await request<{ items: HistoryConversationSummary[] }>(`/api/codex/history${query}`, token);
   return data.items;
 }
 
-export async function fetchRoots(token: string): Promise<WorkspaceEntry[]> {
-  const data = await request<{ items: WorkspaceEntry[] }>("/api/workspace/roots", token);
+export async function fetchRoots(token: string, nodeId?: string): Promise<WorkspaceEntry[]> {
+  const query = nodeId ? `?${new URLSearchParams({ nodeId }).toString()}` : "";
+  const data = await request<{ items: WorkspaceEntry[] }>(`/api/workspace/roots${query}`, token);
   return data.items;
 }
 
 export async function listDirectory(
   token: string,
+  nodeId: string,
   rootPath: string,
   relativePath: string,
 ): Promise<FileEntry[]> {
-  const query = new URLSearchParams({ rootPath, relativePath });
+  const query = new URLSearchParams({ nodeId, rootPath, relativePath });
   const data = await request<{ items: FileEntry[] }>(`/api/fs/list?${query.toString()}`, token);
   return data.items;
 }
 
-export async function readFile(token: string, rootPath: string, relativePath: string): Promise<string> {
-  const query = new URLSearchParams({ rootPath, relativePath });
+export async function readFile(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<string> {
+  const query = new URLSearchParams({ nodeId, rootPath, relativePath });
   const data = await request<{ content: string }>(`/api/fs/file?${query.toString()}`, token);
   return data.content;
 }
 
-export async function downloadFile(token: string, rootPath: string, relativePath: string): Promise<Blob> {
-  const query = new URLSearchParams({ rootPath, relativePath });
+export async function downloadFile(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<Blob> {
+  const query = new URLSearchParams({ nodeId, rootPath, relativePath });
   const response = await fetch(`/api/fs/download?${query.toString()}`, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -109,33 +124,35 @@ export async function downloadFile(token: string, rootPath: string, relativePath
 
 export async function updateFile(
   token: string,
+  nodeId: string,
   rootPath: string,
   relativePath: string,
   content: string,
 ): Promise<void> {
   await request("/api/fs/file", token, {
     method: "PUT",
-    body: JSON.stringify({ rootPath, relativePath, content }),
+    body: JSON.stringify({ nodeId, rootPath, relativePath, content }),
   });
 }
 
-export async function createFolder(token: string, rootPath: string, relativePath: string): Promise<void> {
+export async function createFolder(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<void> {
   await request("/api/fs/folder", token, {
     method: "POST",
-    body: JSON.stringify({ rootPath, relativePath }),
+    body: JSON.stringify({ nodeId, rootPath, relativePath }),
   });
 }
 
-export async function createFile(token: string, rootPath: string, relativePath: string): Promise<void> {
+export async function createFile(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<void> {
   await request("/api/fs/file", token, {
     method: "POST",
-    body: JSON.stringify({ rootPath, relativePath }),
+    body: JSON.stringify({ nodeId, rootPath, relativePath }),
   });
 }
 
 export async function uploadFile(
   token: string,
   payload: {
+    nodeId: string;
     rootPath: string;
     directoryPath: string;
     fileName: string;
@@ -150,46 +167,52 @@ export async function uploadFile(
 
 export async function renameEntry(
   token: string,
+  nodeId: string,
   rootPath: string,
   sourceRelativePath: string,
   targetRelativePath: string,
 ): Promise<void> {
   await request("/api/fs/rename", token, {
     method: "POST",
-    body: JSON.stringify({ rootPath, sourceRelativePath, targetRelativePath }),
+    body: JSON.stringify({ nodeId, rootPath, sourceRelativePath, targetRelativePath }),
   });
 }
 
-export async function deleteEntry(token: string, rootPath: string, relativePath: string): Promise<void> {
+export async function deleteEntry(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<void> {
   await request("/api/fs/delete", token, {
     method: "POST",
-    body: JSON.stringify({ rootPath, relativePath }),
+    body: JSON.stringify({ nodeId, rootPath, relativePath }),
   });
 }
 
 export async function updateGoalGuard(
   token: string,
+  nodeId: string,
   sessionId: string,
   goalConfig: GoalGuardConfig,
 ): Promise<SessionSummary> {
   return request<SessionSummary>(`/api/goal-guard/${sessionId}`, token, {
     method: "PUT",
-    body: JSON.stringify(goalConfig),
+    body: JSON.stringify({ nodeId, ...goalConfig }),
   });
 }
 
-export async function overrideStop(token: string, sessionId: string): Promise<SessionSummary> {
+export async function overrideStop(token: string, sessionId: string, nodeId: string): Promise<SessionSummary> {
   return request<SessionSummary>(`/api/goal-guard/${sessionId}/override-stop`, token, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify({ nodeId }),
   });
 }
 
 export async function fetchCapabilities(token: string): Promise<{
+  runtimeMode: string;
+  nodeId: string;
+  nodeLabel: string;
   platform: string;
   nodeVersion: string;
   tmuxAvailable: boolean;
   codexExecutable: string;
+  workspaceRoots: WorkspaceEntry[];
   securityWarnings: string[];
   features: Record<string, boolean>;
 }> {

@@ -14,6 +14,7 @@ import {
 
 interface FileBrowserProps {
   token: string;
+  nodeId: string | null;
   roots: WorkspaceEntry[];
   activeSessionCwd: string | null;
   activeSessionRoot: string | null;
@@ -50,7 +51,7 @@ function breadcrumbItems(value: string): Array<{ label: string; path: string }> 
   ];
 }
 
-export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot }: FileBrowserProps) {
+export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSessionRoot }: FileBrowserProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [rootPath, setRootPath] = useState(roots[0]?.rootPath ?? "");
   const [relativePath, setRelativePath] = useState(".");
@@ -65,11 +66,12 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   async function refresh(nextRoot = rootPath, nextRelative = relativePath): Promise<void> {
-    if (!nextRoot) {
+    if (!nodeId || !nextRoot) {
+      setEntries([]);
       return;
     }
     try {
-      const items = await listDirectory(token, nextRoot, nextRelative);
+      const items = await listDirectory(token, nodeId, nextRoot, nextRelative);
       setEntries(items);
       setError(null);
     } catch (refreshError) {
@@ -78,7 +80,11 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
   }
 
   useEffect(() => {
-    if (roots.length > 0 && !rootPath) {
+    if (roots.length === 0) {
+      setRootPath("");
+      return;
+    }
+    if (!rootPath || !roots.some((root) => root.rootPath === rootPath)) {
       setRootPath(roots[0].rootPath);
     }
   }, [roots, rootPath]);
@@ -110,7 +116,7 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
 
   useEffect(() => {
     void refresh();
-  }, [rootPath, relativePath]);
+  }, [nodeId, rootPath, relativePath]);
 
   const breadcrumbs = breadcrumbItems(relativePath);
   const canSave = Boolean(selectedFilePath) && isDirty && !isSaving;
@@ -133,7 +139,10 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
     if (selectedFilePath !== filePath && !confirmDiscardChanges()) {
       return;
     }
-    const content = await readFile(token, rootPath, filePath);
+    if (!nodeId) {
+      throw new Error("当前未选择节点");
+    }
+    const content = await readFile(token, nodeId, rootPath, filePath);
     setSelectedFilePath(filePath);
     setPreview(content);
     setIsDirty(false);
@@ -145,7 +154,10 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
     }
     try {
       setIsSaving(true);
-      await updateFile(token, rootPath, selectedFilePath, preview);
+      if (!nodeId) {
+        throw new Error("当前未选择节点");
+      }
+      await updateFile(token, nodeId, rootPath, selectedFilePath, preview);
       setIsDirty(false);
       setError(null);
       await refresh();
@@ -158,7 +170,10 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
 
   async function handleDownload(filePath: string): Promise<void> {
     try {
-      const blob = await downloadFile(token, rootPath, filePath);
+      if (!nodeId) {
+        throw new Error("当前未选择节点");
+      }
+      const blob = await downloadFile(token, nodeId, rootPath, filePath);
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
@@ -172,6 +187,9 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
 
   async function handleUpload(file: File): Promise<void> {
     try {
+      if (!nodeId) {
+        throw new Error("当前未选择节点");
+      }
       setIsUploading(true);
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
@@ -181,6 +199,7 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
       }
       const contentBase64 = btoa(binary);
       const uploaded = await uploadFile(token, {
+        nodeId,
         rootPath,
         directoryPath: relativePath,
         fileName: file.name,
@@ -339,7 +358,11 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
             if (!name) {
               return;
             }
-            void createFolder(token, rootPath, name).then(() => refresh());
+            if (!nodeId) {
+              setError("当前未选择节点");
+              return;
+            }
+            void createFolder(token, nodeId, rootPath, name).then(() => refresh());
           }}
         >
           新建文件夹
@@ -352,7 +375,11 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
             if (!name) {
               return;
             }
-            void createFile(token, rootPath, name)
+            if (!nodeId) {
+              setError("当前未选择节点");
+              return;
+            }
+            void createFile(token, nodeId, rootPath, name)
               .then(async () => {
                 await refresh();
                 await openFile(name);
@@ -410,7 +437,11 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
                   if (!target) {
                     return;
                   }
-                  void renameEntry(token, rootPath, entry.path, target).then(() => {
+                  if (!nodeId) {
+                    setError("当前未选择节点");
+                    return;
+                  }
+                  void renameEntry(token, nodeId, rootPath, entry.path, target).then(() => {
                     if (selectedFilePath === entry.path) {
                       setSelectedFilePath(target);
                     }
@@ -439,7 +470,11 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
                   if (!confirmed) {
                     return;
                   }
-                  void deleteEntry(token, rootPath, entry.path).then(() => {
+                  if (!nodeId) {
+                    setError("当前未选择节点");
+                    return;
+                  }
+                  void deleteEntry(token, nodeId, rootPath, entry.path).then(() => {
                     if (selectedFilePath === entry.path) {
                       setSelectedFilePath(null);
                       setPreview("");

@@ -15,6 +15,21 @@ export default defineConfig(({ mode }) => {
   return {
     envDir: projectRoot,
     plugins: [react()],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes("@xterm")) {
+              return "xterm";
+            }
+            if (id.includes("react") || id.includes("scheduler")) {
+              return "react-vendor";
+            }
+            return undefined;
+          },
+        },
+      },
+    },
     server: {
       port: frontendPort,
       proxy: {

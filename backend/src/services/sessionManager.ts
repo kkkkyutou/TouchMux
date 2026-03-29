@@ -153,6 +153,7 @@ export class SessionManager extends EventEmitter {
 
     const created = this.repository.createSession({
       id: sessionId,
+      nodeId: config.localNode.id,
       title: input.title.trim() || `会话 ${sessionId.slice(0, 6)}`,
       mode: input.mode,
       status: "running",
@@ -185,6 +186,7 @@ export class SessionManager extends EventEmitter {
     const runtime = this.getRuntime(record.id);
     return {
       ...record,
+      nodeLabel: config.localNode.label,
       cwd: this.relativeSessionCwd(record),
       hasTmuxSession: this.hasTmuxSession(record.tmuxSessionName),
       choiceOverlay: runtime.choiceOverlay,
