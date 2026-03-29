@@ -105,8 +105,10 @@ code {
 }
 
 .app-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   padding: 1rem;
+  display: flex;
+  flex-direction: column;
 }
 
 .topbar {
@@ -126,6 +128,11 @@ code {
 .workbench {
   display: grid;
   gap: 1rem;
+}
+
+.console-layout {
+  flex: 1;
+  min-height: 0;
 }
 
 .panel {
@@ -175,6 +182,16 @@ code {
   align-items: center;
 }
 
+.console-brand {
+  min-width: 0;
+}
+
+.mobile-menu-toggle,
+.mobile-topbar-menu,
+.browser-sheet-backdrop {
+  display: none;
+}
+
 .drawer-toggle-button {
   width: auto;
   border-radius: 18px;
@@ -192,6 +209,12 @@ code {
 
 .console-panel {
   min-height: 28rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-panel {
+  min-height: 0;
 }
 
 .session-drawer {
@@ -199,7 +222,7 @@ code {
   top: 0;
   left: 0;
   bottom: 0;
-  width: min(92vw, 28rem);
+  width: min(94vw, 31rem);
   background: rgba(255, 250, 240, 0.98);
   border-right: 1px solid rgba(18, 34, 25, 0.08);
   box-shadow: var(--shadow);
@@ -222,8 +245,43 @@ code {
 .session-drawer-scroll {
   overflow: auto;
   padding: 0 1rem 1rem;
-  display: grid;
-  gap: 1rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+
+.session-drawer-scroll > * {
+  flex: none;
+  flex-grow: 0;
+  height: auto;
+  min-height: 0;
+  align-self: stretch;
+}
+
+.session-drawer .drawer-section-header,
+.session-drawer .session-actions,
+.session-drawer .file-entry-actions,
+.session-drawer .directory-picker-top,
+.session-drawer .session-card-top,
+.session-drawer .directory-picker-summary {
+  flex-wrap: wrap;
+}
+
+.session-drawer .inline-grid {
+  grid-template-columns: 1fr;
+}
+
+.session-drawer .session-card-top,
+.session-drawer .directory-picker-summary {
+  align-items: flex-start;
+}
+
+.session-drawer .session-actions button,
+.session-drawer .file-entry-actions button {
+  flex: 1 1 calc(50% - 0.5rem);
+  min-width: 0;
 }
 
 .drawer-backdrop {
@@ -243,7 +301,21 @@ code {
 
 .drawer-section {
   display: grid;
-  gap: 0.85rem;
+  gap: 0.65rem;
+  flex: none;
+  flex-grow: 0;
+  height: auto;
+  min-height: 0;
+  align-content: start;
+}
+
+.session-sidebar,
+.goal-panel {
+  flex: none;
+  flex-grow: 0;
+  height: auto;
+  min-height: 0;
+  align-self: stretch;
 }
 
 .directory-picker {
@@ -277,12 +349,44 @@ code {
   gap: 0.75rem;
 }
 
+.directory-select-row {
+  display: flex;
+  gap: 0.65rem;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.directory-select-row select {
+  min-width: 0;
+  flex: 1 1 8.5rem;
+}
+
 .directory-picker-top {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.address-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.directory-actions-row {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.compact-button {
+  padding: 0.46rem 0.72rem;
+  border-radius: 12px;
+  font-size: 0.96rem;
+  line-height: 1.1;
 }
 
 .directory-list {
@@ -320,11 +424,14 @@ code {
 
 .session-card {
   border: 1px solid rgba(18, 34, 25, 0.08);
-  border-radius: 20px;
+  border-radius: 16px;
   background: rgba(255, 255, 255, 0.6);
-  padding: 0.95rem;
-  cursor: pointer;
+  min-height: 0;
+  padding: 0.48rem 0.58rem 0.42rem;
   transition: transform 0.18s ease, border-color 0.18s ease;
+  display: grid;
+  gap: 0.24rem;
+  align-content: start;
 }
 
 .session-card-main {
@@ -334,6 +441,17 @@ code {
   color: var(--text);
   padding: 0;
   text-align: left;
+}
+
+.session-card-main.compact {
+  gap: 0.08rem;
+  min-width: 0;
+}
+
+.session-card-title {
+  font-size: 1.04rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .session-card.active {
@@ -356,8 +474,44 @@ code {
 .session-meta,
 .session-preview {
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.98rem;
   margin-top: 0.45rem;
+}
+
+.drawer-section-header .session-meta,
+.session-path,
+.session-path-inline {
+  margin-top: 0.12rem;
+}
+
+.session-path,
+.session-path-inline {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.22;
+}
+
+.session-list {
+  gap: 0.42rem;
+}
+
+.session-actions {
+  gap: 0.3rem;
+  align-items: stretch;
+  margin-top: 0.04rem;
+}
+
+.session-actions button {
+  min-height: 2rem;
+  height: 2rem;
+  padding: 0 0.62rem;
+  border-radius: 12px;
+  font-size: 0.94rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
 }
 
 .status-pill {
@@ -383,12 +537,38 @@ code {
   border-radius: 24px;
   overflow: hidden;
   background: var(--terminal);
-  min-height: 25rem;
+  min-height: clamp(18rem, 48vh, 25rem);
+  flex: 1;
+  min-width: 0;
+}
+
+.console-empty-state {
+  min-height: clamp(18rem, 48vh, 25rem);
+  border-radius: 24px;
+  border: 1px dashed rgba(18, 34, 25, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(247, 241, 229, 0.9));
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 2rem 1.5rem;
+  flex: 1;
+}
+
+.console-empty-state h3,
+.goal-panel h2 {
+  margin: 0.3rem 0 0.45rem;
+}
+
+.console-empty-state p {
+  margin: 0;
+  max-width: 26rem;
+  color: var(--muted);
 }
 
 .terminal-host {
-  height: 60vh;
-  min-height: 25rem;
+  height: clamp(18rem, 60vh, 34rem);
+  min-height: 18rem;
   padding: 0.65rem;
   touch-action: pan-y;
 }
@@ -493,6 +673,19 @@ code {
   gap: 0.75rem;
 }
 
+.goal-panel {
+  gap: 0.85rem;
+}
+
+.goal-panel-empty {
+  display: grid;
+}
+
+.goal-panel-body {
+  display: grid;
+  gap: 0.85rem;
+}
+
 .schema-card {
   border: 1px solid rgba(18, 34, 25, 0.08);
   border-radius: 18px;
@@ -550,6 +743,8 @@ code {
   .topbar {
     flex-direction: column;
     align-items: stretch;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
   }
 
   .console-topbar-main,
@@ -557,10 +752,13 @@ code {
   .drawer-section-header,
   .session-drawer-header,
   .directory-picker-summary,
-  .inline-grid,
   .file-toolbar {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .inline-grid {
+    grid-template-columns: 1fr;
   }
 
   .panel {
@@ -569,11 +767,227 @@ code {
   }
 
   .session-drawer {
-    width: 100vw;
+    width: min(92vw, 27rem);
   }
 
   .terminal-host {
-    min-height: 20rem;
-    height: 48vh;
+    min-height: 16rem;
+    height: clamp(16rem, 52vh, 28rem);
+  }
+}
+
+@media (max-width: 720px) and (orientation: portrait) {
+  .app-shell {
+    padding: 0.5rem;
+  }
+
+  .console-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .console-topbar {
+    margin-bottom: 0.55rem;
+    padding: 0.45rem 0.55rem;
+    border-radius: 18px;
+    background: rgba(255, 250, 240, 0.9);
+    border: 1px solid rgba(18, 34, 25, 0.08);
+    box-shadow: 0 10px 28px rgba(18, 34, 25, 0.08);
+    gap: 0.3rem;
+  }
+
+  .console-topbar-main {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .console-brand .eyebrow {
+    display: none;
+  }
+
+  .console-brand h1 {
+    font-size: 1.14rem;
+    line-height: 1.15;
+    margin: 0;
+  }
+
+  .drawer-toggle-button {
+    padding: 0.55rem 0.75rem;
+    border-radius: 14px;
+    font-size: 1rem;
+  }
+
+  .mobile-menu-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.2rem;
+    min-width: 2.2rem;
+    height: 2.2rem;
+    padding: 0;
+    font-size: 1.3rem;
+  }
+
+  .console-topbar-actions {
+    display: none;
+  }
+
+  .mobile-topbar-menu {
+    display: none;
+  }
+
+  .mobile-topbar-menu.open {
+    display: grid;
+    gap: 0.4rem;
+    padding-top: 0.25rem;
+  }
+
+  .mobile-chip {
+    padding: 0.5rem 0.62rem;
+  }
+
+  .console-panel {
+    flex: 1;
+    min-height: auto;
+    padding: 0.62rem;
+  }
+
+  .panel-header {
+    margin-bottom: 0.5rem;
+    gap: 0.45rem;
+  }
+
+  .panel-header .eyebrow {
+    font-size: 0.74rem;
+  }
+
+  .panel-header h2 {
+    font-size: 1.14rem;
+    line-height: 1.15;
+  }
+
+  .terminal-metadata {
+    display: none;
+  }
+
+  .terminal-stage,
+  .console-empty-state {
+    min-height: 0;
+  }
+
+  .terminal-host {
+    height: 100%;
+    min-height: max(13.5rem, calc(100dvh - 15rem));
+    padding: 0.3rem;
+  }
+
+  .mobile-quickbar {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.38rem;
+    position: sticky;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 0.2rem);
+    background: rgba(255, 250, 240, 0.95);
+    border-top: 1px solid rgba(18, 34, 25, 0.08);
+    padding-top: 0.45rem;
+    margin-top: 0.4rem;
+    z-index: 5;
+  }
+
+  .mobile-quickbar button {
+    min-height: 2.25rem;
+    padding: 0.42rem 0.35rem;
+    font-size: 1rem;
+  }
+
+  .session-drawer {
+    width: min(92vw, 24rem);
+  }
+
+  .session-drawer-header {
+    padding: 0.85rem 0.85rem 0.6rem;
+  }
+
+  .session-drawer-scroll {
+    padding: 0 0.85rem 0.85rem;
+    gap: 0.6rem;
+    justify-content: flex-start;
+    align-items: stretch;
+  }
+
+  .session-card {
+    padding: 0.44rem 0.52rem 0.38rem;
+    gap: 0.22rem;
+  }
+
+  .session-drawer .session-actions button {
+    flex: 1 1 calc(50% - 0.25rem);
+    min-height: 1.8rem;
+    height: 1.8rem;
+    padding: 0 0.5rem;
+    font-size: 0.9rem;
+  }
+
+  .session-drawer .file-entry-actions button {
+    flex: 1 1 auto;
+  }
+
+  .compact-directory-selects {
+    gap: 0.38rem;
+  }
+
+  .address-bar-row {
+    grid-template-columns: 1fr;
+  }
+
+  .directory-picker {
+    padding: 0.7rem;
+  }
+
+  .browser-dock {
+    padding: 0.65rem 0.72rem;
+  }
+
+  .browser-dock.collapsed {
+    position: sticky;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 0.15rem);
+    z-index: 6;
+    border-radius: 18px;
+  }
+
+  .browser-dock.expanded {
+    position: fixed;
+    left: 0.45rem;
+    right: 0.45rem;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 0.35rem);
+    max-height: min(68dvh, 42rem);
+    overflow: auto;
+    z-index: 22;
+    border-radius: 20px;
+  }
+
+  .browser-sheet-backdrop.open {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(18, 34, 25, 0.28);
+    z-index: 20;
+  }
+
+  .panel-toggle-title {
+    margin-bottom: 0.35rem;
+    align-items: center;
+  }
+
+  .panel-toggle-title .eyebrow {
+    display: none;
+  }
+
+  .panel-toggle-title h2 {
+    font-size: 1.08rem;
+    line-height: 1.15;
   }
 }

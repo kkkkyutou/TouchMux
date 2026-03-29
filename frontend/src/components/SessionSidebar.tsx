@@ -27,6 +27,53 @@ function formatDirectoryLabel(rootLabel: string, relativePath: string): string {
   return relativePath === "." ? `${prefix}/` : `${prefix}/${relativePath}`;
 }
 
+function normalizeRelativePath(value: string): string {
+  const normalized = value.trim().replace(/\\/g, "/").replace(/\/+/g, "/");
+  if (!normalized || normalized === "." || normalized === "/") {
+    return ".";
+  }
+  return normalized.replace(/^\.?\//, "").replace(/\/$/, "") || ".";
+}
+
+function parentRelativePath(value: string): string {
+  const normalized = normalizeRelativePath(value);
+  if (normalized === ".") {
+    return ".";
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length <= 1) {
+    return ".";
+  }
+  return segments.slice(0, -1).join("/");
+}
+
+function parsePathInput(input: string, workspaceRoot: string, rootLabel: string): string {
+  const trimmed = input.trim();
+  const displayPrefix = rootLabel.startsWith("Home") ? "~" : rootLabel;
+  if (!trimmed || trimmed === displayPrefix || trimmed === `${displayPrefix}/`) {
+    return ".";
+  }
+  if (displayPrefix === "~" && (trimmed === "~" || trimmed === "~/")) {
+    return ".";
+  }
+  if (displayPrefix === "~" && trimmed.startsWith("~/")) {
+    return normalizeRelativePath(trimmed.slice(2));
+  }
+  if (trimmed.startsWith(`${displayPrefix}/`)) {
+    return normalizeRelativePath(trimmed.slice(displayPrefix.length + 1));
+  }
+  if (trimmed === workspaceRoot || trimmed === `${workspaceRoot}/`) {
+    return ".";
+  }
+  if (trimmed.startsWith(`${workspaceRoot}/`)) {
+    return normalizeRelativePath(trimmed.slice(workspaceRoot.length + 1));
+  }
+  if (trimmed.startsWith("/")) {
+    throw new Error("输入路径超出当前允许根目录");
+  }
+  return normalizeRelativePath(trimmed);
+}
+
 export function SessionSidebar({
   token,
   sessions,
@@ -42,14 +89,16 @@ export function SessionSidebar({
   const [title, setTitle] = useState("");
   const [mode, setMode] = useState<SessionMode>("new");
   const [workspaceRoot, setWorkspaceRoot] = useState(roots[0]?.rootPath ?? "");
-  const [directoryChain, setDirectoryChain] = useState<string[]>([]);
-  const [directoryLevels, setDirectoryLevels] = useState<FileEntry[][]>([]);
+  const [directoryPath, setDirectoryPath] = useState(".");
+  const [childDirectories, setChildDirectories] = useState<FileEntry[]>([]);
+  const [pathDraft, setPathDraft] = useState("");
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [sourceId, setSourceId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
 
   const historyOptions = useMemo(() => historyItems.slice(0, 20), [historyItems]);
   const liveSessions = useMemo(() => sessions.filter((session) => session.hasTmuxSession), [sessions]);
@@ -61,7 +110,8 @@ export function SessionSidebar({
     () => roots.find((root) => root.rootPath === workspaceRoot)?.label ?? "当前根目录",
     [roots, workspaceRoot],
   );
-  const cwd = directoryChain.at(-1) ?? ".";
+  const cwd = directoryPath;
+  const selectedDirectoryLabel = formatDirectoryLabel(selectedRootLabel, cwd);
 
   useEffect(() => {
     if (roots.length > 0 && !workspaceRoot) {
@@ -70,32 +120,34 @@ export function SessionSidebar({
   }, [roots, workspaceRoot]);
 
   useEffect(() => {
-    setDirectoryChain([]);
-  }, [workspaceRoot]);
+    setDirectoryPath(".");
+    setPathDraft(formatDirectoryLabel(selectedRootLabel, "."));
+    setSourceId("");
+  }, [workspaceRoot, selectedRootLabel]);
 
   useEffect(() => {
-    if (!token || !workspaceRoot) {
+    setPathDraft(selectedDirectoryLabel);
+  }, [selectedDirectoryLabel]);
+
+  useEffect(() => {
+    if (!token || !workspaceRoot || !showCreateForm) {
       return;
     }
     let cancelled = false;
-    async function loadDirectoryLevels(): Promise<void> {
+    async function loadCurrentDirectories(): Promise<void> {
       try {
         setDirectoryLoading(true);
-        const paths = [".", ...directoryChain];
-        const results = await Promise.all(
-          paths.map((relativePath) => listDirectory(token, workspaceRoot, relativePath)),
-        );
+        const items = await listDirectory(token, workspaceRoot, cwd);
         if (cancelled) {
           return;
         }
-        setDirectoryLevels(
-          results.map((items) => items.filter((entry) => entry.type === "directory")),
-        );
+        setChildDirectories(items.filter((entry) => entry.type === "directory"));
         setDirectoryError(null);
       } catch (error) {
         if (cancelled) {
           return;
         }
+        setChildDirectories([]);
         setDirectoryError(error instanceof Error ? error.message : "目录读取失败");
       } finally {
         if (!cancelled) {
@@ -103,46 +155,43 @@ export function SessionSidebar({
         }
       }
     }
-    void loadDirectoryLevels();
+    void loadCurrentDirectories();
     return () => {
       cancelled = true;
     };
-  }, [token, workspaceRoot, directoryChain]);
+  }, [token, workspaceRoot, cwd, showCreateForm]);
+
+  function resetCreateForm(): void {
+    setTitle("");
+    setPrompt("");
+    setSourceId("");
+    setDirectoryPath(".");
+    setPathDraft(formatDirectoryLabel(selectedRootLabel, "."));
+    setSubmitError(null);
+    setDirectoryError(null);
+    setMode("new");
+  }
 
   return (
     <div className="drawer-section session-sidebar">
       <div className="drawer-section-header">
         <div>
-          <div className="eyebrow">Codex</div>
+          <div className="eyebrow">终端</div>
           <h2>管理终端</h2>
-          <div className="session-meta">当前运行中的会话会显示在这里，点一下即可切回控制台。</div>
+          <div className="session-meta">默认控制台保持空白，只有你手动选择某个终端后才显示对应内容。</div>
         </div>
       </div>
 
       <div className="session-list">
         {liveSessions.length === 0 ? <div className="session-meta">当前没有运行中的 Codex 终端。</div> : null}
         {liveSessions.map((session) => (
-          <article
-            key={session.id}
-            className={`session-card ${currentSessionId === session.id ? "active" : ""}`}
-          >
-            <button
-              type="button"
-              className="session-card-main"
-              onClick={() => {
-                onSelectSession(session.id);
-                onCloseDrawer();
-              }}
-            >
-              <div className="session-card-top">
-                <strong>{session.title}</strong>
-                <span className={`status-pill status-${session.status}`}>{session.status}</span>
-              </div>
-              <div className="session-meta">
+          <article key={session.id} className={`session-card ${currentSessionId === session.id ? "active" : ""}`}>
+            <div className="session-card-main compact">
+              <strong className="session-card-title">{session.title}</strong>
+              <div className="session-meta session-path">
                 {formatDirectoryLabel(rootLabelMap.get(session.workspaceRoot) ?? "当前根目录", session.cwd)}
               </div>
-              <div className="session-preview">{session.lastOutputPreview || "尚无输出"}</div>
-            </button>
+            </div>
             <div className="session-actions">
               <button
                 type="button"
@@ -156,176 +205,215 @@ export function SessionSidebar({
               </button>
               <button
                 type="button"
-                className="ghost-button"
-                onClick={() => {
-                  void onCloseSession(session.id);
-                }}
-              >
-                关闭
-              </button>
-              <button
-                type="button"
                 className="ghost-button danger"
                 onClick={() => {
                   void onForceCloseSession(session.id);
                 }}
               >
-                删除终端
+                删除
               </button>
             </div>
           </article>
         ))}
       </div>
 
-      <form
-        className="session-create-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setSubmitting(true);
-          setSubmitError(null);
-          void onCreateSession({
-            title: title || `${mode === "new" ? "新建" : mode === "resume" ? "恢复" : "Fork"} 会话`,
-            workspaceRoot,
-            cwd,
-            mode,
-            prompt: prompt || undefined,
-            sourceCodexSessionId: sourceId || undefined,
-          })
-            .then(() => {
-              setTitle("");
-              setPrompt("");
-              setDirectoryChain([]);
-              onCloseDrawer();
-            })
-            .catch((error) => {
-              setSubmitError(error instanceof Error ? error.message : "创建会话失败");
-            })
-            .finally(() => {
-              setSubmitting(false);
-            });
-        }}
-      >
+      <div className="drawer-section">
         <div className="drawer-section-header">
           <div>
             <div className="eyebrow">新建</div>
-            <h2>创建 Codex 终端</h2>
+            <h2>创建终端</h2>
           </div>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => {
+              setShowCreateForm((current) => {
+                const next = !current;
+                if (!next) {
+                  resetCreateForm();
+                }
+                return next;
+              });
+            }}
+          >
+            {showCreateForm ? "收起" : "新建终端"}
+          </button>
         </div>
-        {submitError ? <div className="error-banner">{submitError}</div> : null}
-        <div className="inline-grid">
-          <label>
-            标题
-            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="比如：修复终端附着" />
-          </label>
-          <label>
-            模式
-            <select value={mode} onChange={(event) => setMode(event.target.value as SessionMode)}>
-              <option value="new">新建</option>
-              <option value="resume">恢复已有 Codex 会话</option>
-              <option value="fork">Fork 已有 Codex 会话</option>
-            </select>
-          </label>
-          <label>
-            工作根目录
-            <select value={workspaceRoot} onChange={(event) => setWorkspaceRoot(event.target.value)}>
-              {roots.map((root) => (
-                <option key={root.rootPath} value={root.rootPath}>
-                  {root.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <label>
-          工作根目录
-          <select value={workspaceRoot} onChange={(event) => setWorkspaceRoot(event.target.value)}>
-            {roots.map((root) => (
-              <option key={root.rootPath} value={root.rootPath}>
-                {root.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="directory-picker">
-          <div className="directory-picker-summary">
-            <strong>启动目录</strong>
-            <span className="session-meta">{formatDirectoryLabel(selectedRootLabel, cwd)}</span>
-          </div>
-          <div className="directory-picker-top">
-            <span className="session-meta">从根目录开始，逐级选择子目录。</span>
-            {directoryLoading ? <span className="session-meta">读取中...</span> : null}
-          </div>
-          <div className="directory-chain">
-            {directoryLevels.map((level, index) => (
-              <label key={`level-${index}`}>
-                {index === 0 ? "第 1 级子目录" : `第 ${index + 1} 级子目录`}
+
+        {!showCreateForm ? null : (
+          <form
+            className="session-create-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setSubmitting(true);
+              setSubmitError(null);
+              void onCreateSession({
+                title: title || `${mode === "new" ? "新建" : mode === "resume" ? "恢复" : "Fork"} 会话`,
+                workspaceRoot,
+                cwd,
+                mode,
+                prompt: prompt || undefined,
+                sourceCodexSessionId: sourceId || undefined,
+              })
+                .then(() => {
+                  resetCreateForm();
+                  setShowCreateForm(false);
+                })
+                .catch((error) => {
+                  setSubmitError(error instanceof Error ? error.message : "创建会话失败");
+                })
+                .finally(() => {
+                  setSubmitting(false);
+                });
+            }}
+          >
+            {submitError ? <div className="error-banner">{submitError}</div> : null}
+            <label>
+              标题
+              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="比如：修复终端附着" />
+            </label>
+            <label>
+              模式
+              <select value={mode} onChange={(event) => setMode(event.target.value as SessionMode)}>
+                <option value="new">新建</option>
+                <option value="resume">恢复已有 Codex 会话</option>
+                <option value="fork">Fork 已有 Codex 会话</option>
+              </select>
+            </label>
+            <label>
+              工作根目录
+              <select value={workspaceRoot} onChange={(event) => setWorkspaceRoot(event.target.value)}>
+                {roots.map((root) => (
+                  <option key={root.rootPath} value={root.rootPath}>
+                    {root.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="directory-picker">
+              <div className="directory-picker-summary">
+                <strong>启动目录</strong>
+                {directoryLoading ? <span className="session-meta">读取中...</span> : null}
+              </div>
+              <div className="address-bar-row">
+                <input
+                  value={pathDraft}
+                  onChange={(event) => setPathDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") {
+                      return;
+                    }
+                    event.preventDefault();
+                    try {
+                      const nextPath = parsePathInput(pathDraft, workspaceRoot, selectedRootLabel);
+                      setDirectoryPath(nextPath);
+                      setDirectoryError(null);
+                    } catch (error) {
+                      setDirectoryError(error instanceof Error ? error.message : "路径无效");
+                    }
+                  }}
+                  aria-label="启动目录路径"
+                  placeholder={formatDirectoryLabel(selectedRootLabel, ".")}
+                />
+                <button
+                  type="button"
+                  className="ghost-button compact-button"
+                  onClick={() => {
+                    try {
+                      const nextPath = parsePathInput(pathDraft, workspaceRoot, selectedRootLabel);
+                      setDirectoryPath(nextPath);
+                      setDirectoryError(null);
+                    } catch (error) {
+                      setDirectoryError(error instanceof Error ? error.message : "路径无效");
+                    }
+                  }}
+                >
+                  打开
+                </button>
+              </div>
+              <div className="directory-picker-top">
+                <span className="session-meta">可以直接输入完整路径，例如 {formatDirectoryLabel(selectedRootLabel, "projects")}。</span>
+              </div>
+              <div className="directory-actions-row">
+                <button
+                  type="button"
+                  className="ghost-button compact-button"
+                  onClick={() => {
+                    setDirectoryPath(".");
+                    setDirectoryError(null);
+                  }}
+                >
+                  根目录
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button compact-button"
+                  onClick={() => {
+                    setDirectoryPath(parentRelativePath(cwd));
+                    setDirectoryError(null);
+                  }}
+                  disabled={cwd === "."}
+                >
+                  上一级
+                </button>
+              </div>
+              <label>
+                进入子目录
                 <select
-                  value={directoryChain[index] ?? ""}
+                  value=""
                   onChange={(event) => {
                     const nextPath = event.target.value;
                     if (!nextPath) {
-                      setDirectoryChain((current) => current.slice(0, index));
                       return;
                     }
-                    setDirectoryChain((current) => [...current.slice(0, index), nextPath]);
+                    setDirectoryPath(nextPath);
+                    setDirectoryError(null);
                   }}
                 >
-                  <option value="">{index === 0 ? "保持在根目录" : "停在当前层级"}</option>
-                  {level.map((entry) => (
+                  <option value="">请选择</option>
+                  {childDirectories.map((entry) => (
                     <option key={entry.path} value={entry.path}>
                       {entry.name}
                     </option>
                   ))}
                 </select>
               </label>
-            ))}
-          </div>
-          <div className="file-entry-actions">
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                setDirectoryChain([]);
-              }}
-            >
-              回到根目录
+              {directoryError ? <div className="error-banner">{directoryError}</div> : null}
+            </div>
+            {mode !== "new" ? (
+              <label>
+                源 Codex Session
+                <select value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
+                  <option value="">请选择</option>
+                  {historyOptions.map((item) => (
+                    <option key={item.sessionId} value={item.sessionId}>
+                      {item.sessionId.slice(0, 8)} · {new Date(item.lastUpdatedAt).toLocaleString()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <label>
+              初始提示
+              <textarea
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                placeholder="可选。新建时作为初始 prompt，恢复/fork 时作为跟进 prompt。"
+                rows={3}
+              />
+            </label>
+            <button type="submit" disabled={submitting || !workspaceRoot || (mode !== "new" && !sourceId)}>
+              {submitting
+                ? "处理中..."
+                : mode === "new"
+                  ? "创建并启动"
+                  : mode === "resume"
+                    ? "恢复到新 tmux"
+                    : "Fork 到新 tmux"}
             </button>
-          </div>
-          <input value={cwd} readOnly aria-label="选中的启动目录" />
-          {directoryError ? <div className="error-banner">{directoryError}</div> : null}
-        </div>
-        {mode !== "new" ? (
-          <label>
-            源 Codex Session
-            <select value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
-              <option value="">请选择</option>
-              {historyOptions.map((item) => (
-                <option key={item.sessionId} value={item.sessionId}>
-                  {item.sessionId.slice(0, 8)} · {new Date(item.lastUpdatedAt).toLocaleString()}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-        <label>
-          初始提示
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder="可选。新建时作为初始 prompt，恢复/fork 时作为跟进 prompt。"
-            rows={3}
-          />
-        </label>
-        <button type="submit" disabled={submitting || !workspaceRoot || (mode !== "new" && !sourceId)}>
-          {submitting
-            ? "处理中..."
-            : mode === "new"
-              ? "创建并启动"
-              : mode === "resume"
-                ? "恢复到新 tmux"
-                : "Fork 到新 tmux"}
-        </button>
-      </form>
+          </form>
+        )}
+      </div>
     </div>
   );
 }

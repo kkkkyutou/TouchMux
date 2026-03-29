@@ -31,6 +31,16 @@ const hiddenOverlay: ChoiceOverlay = {
   detectedAt: 0,
 };
 
+function summarizeTerminalText(value: string): string {
+  return value
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, " ")
+    .replace(/\u001b[@-_]/g, " ")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(-300);
+}
+
 export class SessionManager extends EventEmitter {
   private readonly runtime = new Map<string, RuntimeState>();
 
@@ -131,7 +141,7 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  createSession(input: CreateSessionInput): ManagedSessionRecord {
+  createSession(input: CreateSessionInput): SessionSummary {
     const absoluteCwd = this.ensureCwd(input);
     const relativeCwd = path.relative(input.workspaceRoot, absoluteCwd) || ".";
     const command = this.buildCodexCommand({ ...input, cwd: absoluteCwd });
@@ -159,7 +169,7 @@ export class SessionManager extends EventEmitter {
     });
     this.repository.logAudit("session.created", created, created.id);
     this.emitSession(created.id);
-    return created;
+    return this.toSummary(created);
   }
 
   listSessionSummaries(): SessionSummary[] {
@@ -234,7 +244,7 @@ export class SessionManager extends EventEmitter {
     const updated = this.repository.updateSession(sessionId, {
       status: session.goalState === "goal_satisfied" ? "goal_satisfied" : "running",
       lastOutputAt: Date.now(),
-      lastOutputPreview: runtime.buffer.replace(/\s+/g, " ").trim().slice(-300),
+      lastOutputPreview: summarizeTerminalText(runtime.buffer),
       goalState:
         session.goalState === "goal_satisfied" ? "goal_satisfied" : session.goalConfig.enabled ? "running" : "disabled",
     });
@@ -331,12 +341,7 @@ export class SessionManager extends EventEmitter {
     this.repository.updateSession(sessionId, {
       status: result.status === 0 ? "goal_satisfied" : session.status,
       goalState: nextState,
-      lastOutputPreview: [session.lastOutputPreview, result.stdout, result.stderr]
-        .filter(Boolean)
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(-300),
+      lastOutputPreview: summarizeTerminalText([session.lastOutputPreview, result.stdout, result.stderr].filter(Boolean).join(" ")),
     });
     this.emitSession(sessionId);
     return result.status === 0;

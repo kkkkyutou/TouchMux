@@ -10,6 +10,19 @@ interface TerminalPaneProps {
   onError: (message: string) => void;
 }
 
+function resolveTerminalFontSize(): number {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const isPortraitMobile = width <= 720 && height > width;
+  if (isPortraitMobile) {
+    return Math.max(12, Math.min(15, Math.floor(width / 24)));
+  }
+  if (width <= 720) {
+    return 14;
+  }
+  return 14;
+}
+
 export function TerminalPane({ token, sessionId, onReady, onError }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -21,7 +34,7 @@ export function TerminalPane({ token, sessionId, onReady, onError }: TerminalPan
       convertEol: true,
       cursorBlink: true,
       fontFamily: '"Iosevka Term", "JetBrains Mono", monospace',
-      fontSize: 14,
+      fontSize: resolveTerminalFontSize(),
       theme: {
         background: "#101513",
         foreground: "#f1efe6",
@@ -38,7 +51,8 @@ export function TerminalPane({ token, sessionId, onReady, onError }: TerminalPan
       terminal.open(hostRef.current);
       fitAddon.fit();
     }
-    const resizeObserver = new ResizeObserver(() => {
+    const syncTerminalViewport = () => {
+      terminal.options.fontSize = resolveTerminalFontSize();
       fitAddon.fit();
       const socket = socketRef.current;
       if (socket?.readyState === WebSocket.OPEN) {
@@ -50,13 +64,18 @@ export function TerminalPane({ token, sessionId, onReady, onError }: TerminalPan
           }),
         );
       }
+    };
+    const resizeObserver = new ResizeObserver(() => {
+      syncTerminalViewport();
     });
     if (hostRef.current) {
       resizeObserver.observe(hostRef.current);
     }
+    window.addEventListener("resize", syncTerminalViewport);
 
     return () => {
       resizeObserver.disconnect();
+      window.removeEventListener("resize", syncTerminalViewport);
       onReady(null);
       socketRef.current?.close();
       terminal.dispose();

@@ -214,22 +214,29 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
   }, [isDirty]);
 
   return (
-    <section className="panel file-browser browser-dock">
-      <button
-        type="button"
-        className="panel-toggle-title"
+    <>
+      <div
+        className={`browser-sheet-backdrop ${isExpanded ? "open" : ""}`}
         onClick={() => {
-          setIsExpanded((current) => !current);
+          setIsExpanded(false);
         }}
-      >
-        <span>
-          <div className="eyebrow">文件管理</div>
-          <h2>{isExpanded ? "点击收起文件管理" : "点击展开文件管理"}</h2>
-        </span>
-        <span className="session-meta">{relativePath === "." ? "根目录" : relativePath}</span>
-      </button>
-      {!isExpanded ? null : (
-        <>
+      />
+      <section className={`panel file-browser browser-dock ${isExpanded ? "expanded" : "collapsed"}`}>
+        <button
+          type="button"
+          className="panel-toggle-title"
+          onClick={() => {
+            setIsExpanded((current) => !current);
+          }}
+        >
+          <span>
+            <div className="eyebrow">文件管理</div>
+            <h2>{isExpanded ? "点击收起文件管理" : "点击展开文件管理"}</h2>
+          </span>
+          <span className="session-meta">{relativePath === "." ? "根目录" : relativePath}</span>
+        </button>
+        {!isExpanded ? null : (
+          <>
           <div className="panel-header">
             <div>
               <div className="eyebrow">文件</div>
@@ -483,8 +490,9 @@ export function FileBrowser({ token, roots, activeSessionCwd, activeSessionRoot 
         placeholder="点击文件后可直接编辑并保存文本内容"
         spellCheck={false}
       />
-        </>
-      )}
-    </section>
+          </>
+        )}
+      </section>
+    </>
   );
 }

@@ -38,19 +38,16 @@ export default function App() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [flashError, setFlashError] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const senderRef = useRef<((text: string) => void) | null>(null);
   const deferredSessionId = useDeferredValue(currentSessionId);
 
-  const pickPreferredSessionId = useCallback(
-    (list: SessionSummary[], currentId: string | null): string | null => {
-      const active = list.filter((session) => session.hasTmuxSession);
-      if (currentId && active.some((session) => session.id === currentId)) {
-        return currentId;
-      }
-      return active[0]?.id ?? list[0]?.id ?? null;
-    },
-    [],
-  );
+  const reconcileSelectedSessionId = useCallback((list: SessionSummary[], currentId: string | null): string | null => {
+    if (!currentId) {
+      return null;
+    }
+    return list.some((session) => session.id === currentId && session.hasTmuxSession) ? currentId : null;
+  }, []);
 
   const currentSession = useMemo(
     () => sessions.find((session) => session.id === currentSessionId) ?? null,
@@ -75,8 +72,8 @@ export default function App() {
     setSessions(sessionItems);
     setHistoryItems(history);
     setRoots(workspaceRoots);
-    setCurrentSessionId((current) => pickPreferredSessionId(sessionItems, current));
-  }, [token, pickPreferredSessionId]);
+    setCurrentSessionId((current) => reconcileSelectedSessionId(sessionItems, current));
+  }, [token, reconcileSelectedSessionId]);
 
   useEffect(() => {
     if (!token) {
@@ -91,15 +88,15 @@ export default function App() {
     token,
     useCallback((snapshot) => {
       setSessions(snapshot);
-      setCurrentSessionId((current) => pickPreferredSessionId(snapshot, current));
-    }, [pickPreferredSessionId]),
+      setCurrentSessionId((current) => reconcileSelectedSessionId(snapshot, current));
+    }, [reconcileSelectedSessionId]),
     useCallback((session) => {
       setSessions((current) => {
         const next = upsertSession(current, session);
-        setCurrentSessionId((selected) => pickPreferredSessionId(next, selected));
+        setCurrentSessionId((selected) => reconcileSelectedSessionId(next, selected));
         return next;
       });
-    }, [pickPreferredSessionId]),
+    }, [reconcileSelectedSessionId]),
   );
 
   async function handleLogin(password: string): Promise<void> {
@@ -131,16 +128,46 @@ export default function App() {
               setDrawerOpen(true);
             }}
           >
-            管理 Codex
+            管理终端
           </button>
-          <div>
+          <div className="console-brand">
             <div className="eyebrow">TouchMux</div>
             <h1>移动远程控制台</h1>
           </div>
+          <button
+            type="button"
+            className="ghost-button mobile-menu-toggle"
+            onClick={() => {
+              setMobileMenuOpen((current) => !current);
+            }}
+            aria-label="打开更多操作"
+          >
+            ⋯
+          </button>
         </div>
         <div className="console-topbar-actions">
           {currentSession ? (
             <div className="console-session-chip">
+              <strong>{currentSession.title}</strong>
+              <span>{currentSession.cwd || "."}</span>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => {
+              localStorage.removeItem(TOKEN_STORAGE_KEY);
+              setToken(null);
+              setSessions([]);
+              setCurrentSessionId(null);
+            }}
+          >
+            退出
+          </button>
+        </div>
+        <div className={`mobile-topbar-menu ${mobileMenuOpen ? "open" : ""}`}>
+          {currentSession ? (
+            <div className="console-session-chip mobile-chip">
               <strong>{currentSession.title}</strong>
               <span>{currentSession.cwd || "."}</span>
             </div>
@@ -177,48 +204,58 @@ export default function App() {
             ) : null}
           </div>
 
-          <div className="terminal-stage">
-            <TerminalPane
-              token={token}
-              sessionId={deferredSessionId}
-              onReady={handleTerminalReady}
-              onError={handleTerminalError}
-            />
-            {currentSession?.choiceOverlay.visible ? (
-              <div className="choice-overlay">
-                <div className="overlay-title">检测到可点击选择项</div>
-                <div className="overlay-actions">
-                  {currentSession.choiceOverlay.options.map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => senderRef.current?.(option.send)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
+          {!currentSession ? (
+            <div className="console-empty-state">
+              <div className="eyebrow">控制台待连接</div>
+              <h3>当前未显示任何终端</h3>
+              <p>点击左上角“管理终端”，从已有终端里选择一个，或者先新建终端。</p>
+            </div>
+          ) : (
+            <>
+              <div className="terminal-stage">
+                <TerminalPane
+                  token={token}
+                  sessionId={deferredSessionId}
+                  onReady={handleTerminalReady}
+                  onError={handleTerminalError}
+                />
+                {currentSession.choiceOverlay.visible ? (
+                  <div className="choice-overlay">
+                    <div className="overlay-title">检测到可点击选择项</div>
+                    <div className="overlay-actions">
+                      {currentSession.choiceOverlay.options.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => senderRef.current?.(option.send)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-          </div>
 
-          <div className="mobile-quickbar">
-            <button type="button" onClick={() => senderRef.current?.("\u001b[A")}>
-              上
-            </button>
-            <button type="button" onClick={() => senderRef.current?.("\u001b[B")}>
-              下
-            </button>
-            <button type="button" onClick={() => senderRef.current?.("\r")}>
-              回车
-            </button>
-            <button type="button" onClick={() => senderRef.current?.("\u0003")}>
-              Ctrl+C
-            </button>
-            <button type="button" onClick={() => senderRef.current?.(" ")}>
-              空格
-            </button>
-          </div>
+              <div className="mobile-quickbar">
+                <button type="button" onClick={() => senderRef.current?.("\u001b[A")}>
+                  上
+                </button>
+                <button type="button" onClick={() => senderRef.current?.("\u001b[B")}>
+                  下
+                </button>
+                <button type="button" onClick={() => senderRef.current?.("\r")}>
+                  回车
+                </button>
+                <button type="button" onClick={() => senderRef.current?.("\u0003")}>
+                  Ctrl+C
+                </button>
+                <button type="button" onClick={() => senderRef.current?.(" ")}>
+                  空格
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         <FileBrowser
@@ -233,8 +270,8 @@ export default function App() {
       <aside className={`session-drawer ${drawerOpen ? "open" : ""}`}>
         <div className="session-drawer-header">
           <div>
-            <div className="eyebrow">Codex</div>
-            <h2>会话与配置</h2>
+            <div className="eyebrow">终端</div>
+            <h2>终端管理</h2>
           </div>
           <button
             type="button"
@@ -261,13 +298,13 @@ export default function App() {
                 const next = upsertSession(current, created);
                 return next;
               });
-              setCurrentSessionId(created.id);
+              await refreshAll();
             }}
             onCloseSession={async (sessionId) => {
               const updated = await closeSession(token, sessionId, false);
               setSessions((current) => {
                 const next = upsertSession(current, updated);
-                setCurrentSessionId((selected) => pickPreferredSessionId(next, selected));
+                setCurrentSessionId((selected) => reconcileSelectedSessionId(next, selected));
                 return next;
               });
             }}
@@ -275,7 +312,7 @@ export default function App() {
               const updated = await overrideStop(token, sessionId);
               setSessions((current) => {
                 const next = upsertSession(current, updated);
-                setCurrentSessionId((selected) => pickPreferredSessionId(next, selected));
+                setCurrentSessionId((selected) => reconcileSelectedSessionId(next, selected));
                 return next;
               });
             }}
