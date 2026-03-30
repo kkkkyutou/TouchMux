@@ -7,6 +7,34 @@ import type {
   WorkspaceEntry,
 } from "../types/api";
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+function notifyUnauthorized(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent("touchmux:unauthorized"));
+}
+
+function buildApiError(status: number, fallbackMessage: string, message?: string): ApiError {
+  if (status === 401) {
+    notifyUnauthorized();
+  }
+  return new ApiError(message ?? fallbackMessage, status);
+}
+
+export function isUnauthorizedError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
 async function request<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -18,7 +46,7 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
   });
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { message?: string };
-    throw new Error(data.message ?? "请求失败");
+    throw buildApiError(response.status, "请求失败", data.message);
   }
   return (await response.json()) as T;
 }
@@ -33,7 +61,7 @@ export async function login(password: string): Promise<string> {
   });
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { message?: string };
-    throw new Error(data.message ?? "登录失败");
+    throw buildApiError(response.status, "登录失败", data.message);
   }
   const data = (await response.json()) as { token: string };
   return data.token;
@@ -117,7 +145,7 @@ export async function downloadFile(token: string, nodeId: string, rootPath: stri
   });
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { message?: string };
-    throw new Error(data.message ?? "文件下载失败");
+    throw buildApiError(response.status, "文件下载失败", data.message);
   }
   return response.blob();
 }

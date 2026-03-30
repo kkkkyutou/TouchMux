@@ -12,9 +12,13 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
   const [form, setForm] = useState<GoalGuardConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   useEffect(() => {
     setForm(session?.goalConfig ?? null);
+    setError(null);
+    setSavedNotice(null);
   }, [session]);
 
   useEffect(() => {
@@ -142,13 +146,23 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
             disabled={saving}
             onClick={() => {
               setSaving(true);
+              setError(null);
+              setSavedNotice(null);
               void updateGoalGuard(token, session.nodeId, session.id, form)
-                .then((updated) => onUpdated(updated))
+                .then((updated) => {
+                  onUpdated(updated);
+                  setSavedNotice("Goal Guard 已保存。");
+                })
+                .catch((saveError) => {
+                  setError(saveError instanceof Error ? saveError.message : "Goal Guard 保存失败");
+                })
                 .finally(() => setSaving(false));
             }}
           >
             {saving ? "保存中..." : "保存 Goal Guard"}
           </button>
+          {error ? <div className="error-banner inline-banner">{error}</div> : null}
+          {savedNotice ? <div className="success-banner inline-banner">{savedNotice}</div> : null}
         </div>
       )}
     </section>

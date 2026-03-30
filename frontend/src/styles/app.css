@@ -186,6 +186,31 @@ code {
   min-width: 0;
 }
 
+.connection-status-chip {
+  margin-top: 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.82rem;
+  background: rgba(18, 34, 25, 0.08);
+  color: var(--muted);
+}
+
+.connection-status-chip.status-open {
+  background: rgba(11, 122, 91, 0.12);
+  color: var(--accent-strong);
+}
+
+.connection-status-chip.status-reconnecting,
+.connection-status-chip.status-error {
+  background: rgba(176, 77, 50, 0.12);
+  color: var(--danger);
+}
+
 .mobile-menu-toggle,
 .mobile-topbar-menu,
 .browser-sheet-backdrop {
@@ -701,6 +726,36 @@ code {
   margin-top: 1rem;
 }
 
+.inline-action-card {
+  display: grid;
+  gap: 0.8rem;
+  border: 1px solid rgba(18, 34, 25, 0.08);
+  border-radius: 18px;
+  padding: 0.9rem;
+  background: rgba(255, 255, 255, 0.72);
+  margin-bottom: 0.9rem;
+}
+
+.inline-action-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 0.75rem;
+}
+
+.inline-action-header h3 {
+  margin: 0.2rem 0 0;
+}
+
+.confirm-card {
+  background: rgba(255, 247, 244, 0.84);
+}
+
+.confirm-card-text {
+  margin: 0;
+  color: var(--muted);
+}
+
 .system-summary,
 .config-schema-list {
   display: grid;
@@ -756,6 +811,18 @@ code {
   border-radius: 16px;
   padding: 0.85rem 1rem;
   margin-bottom: 1rem;
+}
+
+.success-banner {
+  background: rgba(11, 122, 91, 0.12);
+  color: var(--accent-strong);
+  border-radius: 16px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.inline-banner {
+  margin-bottom: 0;
 }
 
 .empty-panel {
@@ -846,6 +913,11 @@ code {
     font-size: 1.14rem;
     line-height: 1.15;
     margin: 0;
+  }
+
+  .connection-status-chip {
+    margin-top: 0.3rem;
+    font-size: 0.78rem;
   }
 
   .drawer-toggle-button {
@@ -1023,5 +1095,11 @@ code {
   .panel-toggle-title h2 {
     font-size: 1.08rem;
     line-height: 1.15;
+  }
+
+  .inline-action-header,
+  .editor-header {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

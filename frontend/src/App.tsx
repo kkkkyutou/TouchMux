@@ -7,10 +7,11 @@ import {
   fetchHistory,
   fetchNodes,
   fetchSessions,
+  isUnauthorizedError,
   login,
   overrideStop,
 } from "./lib/api";
-import { useEventSocket } from "./hooks/useEventSocket";
+import { useEventSocket, type EventSocketStatus } from "./hooks/useEventSocket";
 import type { HistoryConversationSummary, NodeSummary, SessionSummary } from "./types/api";
 
 const TOKEN_STORAGE_KEY = "touchmux-token";
@@ -49,6 +50,7 @@ export default function App() {
   const [flashError, setFlashError] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [eventSocketStatus, setEventSocketStatus] = useState<EventSocketStatus>("connecting");
   const senderRef = useRef<((text: string) => void) | null>(null);
   const deferredSessionId = useDeferredValue(currentSessionId);
 
@@ -78,6 +80,32 @@ export default function App() {
     setFlashError(message);
   }, []);
 
+  const resetAuthenticatedState = useCallback((nextLoginError: string | null = null) => {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    setToken(null);
+    setSessions([]);
+    setNodes([]);
+    setHistoryItems([]);
+    setCurrentNodeId(null);
+    setCurrentSessionId(null);
+    setDrawerOpen(false);
+    setMobileMenuOpen(false);
+    setFlashError(null);
+    setEventSocketStatus("connecting");
+    setLoginError(nextLoginError);
+  }, []);
+
+  const handleAppError = useCallback(
+    (error: unknown, fallbackMessage: string, unauthorizedMessage = "登录状态已失效，请重新登录。") => {
+      if (isUnauthorizedError(error)) {
+        resetAuthenticatedState(unauthorizedMessage);
+        return;
+      }
+      setFlashError(error instanceof Error ? error.message : fallbackMessage);
+    },
+    [resetAuthenticatedState],
+  );
+
   const refreshAll = useCallback(async () => {
     if (!token) {
       return;
@@ -99,9 +127,9 @@ export default function App() {
       return;
     }
     void refreshAll().catch((error) => {
-      setFlashError(error instanceof Error ? error.message : "初始化失败");
+      handleAppError(error, "初始化失败");
     });
-  }, [token, refreshAll]);
+  }, [token, refreshAll, handleAppError]);
 
   useEffect(() => {
     if (!token) {
@@ -118,10 +146,12 @@ export default function App() {
             return items[0]?.id ?? null;
           });
         })
-        .catch(() => undefined);
+        .catch((error) => {
+          handleAppError(error, "节点列表刷新失败");
+        });
     }, 10000);
     return () => window.clearInterval(timer);
-  }, [token]);
+  }, [token, handleAppError]);
 
   useEventSocket(
     token,
@@ -136,6 +166,7 @@ export default function App() {
         return next;
       });
     }, [reconcileSelectedSessionId]),
+    setEventSocketStatus,
   );
 
   useEffect(() => {
@@ -147,9 +178,22 @@ export default function App() {
       .then((items) => setHistoryItems(items))
       .catch((error) => {
         setHistoryItems([]);
-        setFlashError(error instanceof Error ? error.message : "读取历史会话失败");
+        handleAppError(error, "读取历史会话失败");
       });
-  }, [token, currentNodeId]);
+  }, [token, currentNodeId, handleAppError]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    const handleUnauthorizedEvent = () => {
+      resetAuthenticatedState("登录状态已失效，请重新登录。");
+    };
+    window.addEventListener("touchmux:unauthorized", handleUnauthorizedEvent);
+    return () => {
+      window.removeEventListener("touchmux:unauthorized", handleUnauthorizedEvent);
+    };
+  }, [token, resetAuthenticatedState]);
 
   async function handleLogin(password: string): Promise<void> {
     try {
@@ -158,12 +202,23 @@ export default function App() {
       localStorage.setItem(TOKEN_STORAGE_KEY, nextToken);
       setToken(nextToken);
       setLoginError(null);
+      setFlashError(null);
+      setEventSocketStatus("connecting");
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "登录失败");
     } finally {
       setLoggingIn(false);
     }
   }
+
+  const eventSocketStatusLabel =
+    eventSocketStatus === "open"
+      ? "实时连接已建立"
+      : eventSocketStatus === "reconnecting"
+        ? "实时连接重连中"
+        : eventSocketStatus === "error"
+          ? "实时连接异常"
+          : "实时连接中";
 
   if (!token) {
     return <LoginScreen onLogin={handleLogin} loading={loggingIn} error={loginError} />;
@@ -185,6 +240,7 @@ export default function App() {
           <div className="console-brand">
             <div className="eyebrow">TouchMux</div>
             <h1>移动远程控制台</h1>
+            <div className={`connection-status-chip status-${eventSocketStatus}`}>{eventSocketStatusLabel}</div>
           </div>
           <button
             type="button"
@@ -208,12 +264,7 @@ export default function App() {
             type="button"
             className="ghost-button"
             onClick={() => {
-              localStorage.removeItem(TOKEN_STORAGE_KEY);
-              setToken(null);
-              setSessions([]);
-              setNodes([]);
-              setCurrentNodeId(null);
-              setCurrentSessionId(null);
+              resetAuthenticatedState();
             }}
           >
             退出
@@ -226,16 +277,12 @@ export default function App() {
               <span>{currentSession.cwd || "."}</span>
             </div>
           ) : null}
+          <div className={`connection-status-chip status-${eventSocketStatus}`}>{eventSocketStatusLabel}</div>
           <button
             type="button"
             className="ghost-button"
             onClick={() => {
-              localStorage.removeItem(TOKEN_STORAGE_KEY);
-              setToken(null);
-              setSessions([]);
-              setNodes([]);
-              setCurrentNodeId(null);
-              setCurrentSessionId(null);
+              resetAuthenticatedState();
             }}
           >
             退出
@@ -365,29 +412,42 @@ export default function App() {
             }}
             onCloseDrawer={() => setDrawerOpen(false)}
             onCreateSession={async (payload) => {
-              const created = await createSession(token, payload);
-              setSessions((current) => {
-                const next = upsertSession(current, created);
-                return next;
-              });
-              setCurrentNodeId(created.nodeId);
-              await refreshAll();
+              try {
+                const created = await createSession(token, payload);
+                setSessions((current) => {
+                  const next = upsertSession(current, created);
+                  return next;
+                });
+                setCurrentNodeId(created.nodeId);
+                await refreshAll();
+              } catch (error) {
+                handleAppError(error, "创建会话失败");
+                throw error;
+              }
             }}
             onCloseSession={async (sessionId, nodeId) => {
-              const updated = await closeSession(token, sessionId, nodeId, false);
-              setSessions((current) => {
-                const next = upsertSession(current, updated);
-                setCurrentSessionId((selected) => reconcileSelectedSessionId(next, selected));
-                return next;
-              });
+              try {
+                const updated = await closeSession(token, sessionId, nodeId, false);
+                setSessions((current) => {
+                  const next = upsertSession(current, updated);
+                  setCurrentSessionId((selected) => reconcileSelectedSessionId(next, selected));
+                  return next;
+                });
+              } catch (error) {
+                handleAppError(error, "关闭会话失败");
+              }
             }}
             onForceCloseSession={async (sessionId, nodeId) => {
-              const updated = await overrideStop(token, sessionId, nodeId);
-              setSessions((current) => {
-                const next = upsertSession(current, updated);
-                setCurrentSessionId((selected) => reconcileSelectedSessionId(next, selected));
-                return next;
-              });
+              try {
+                const updated = await overrideStop(token, sessionId, nodeId);
+                setSessions((current) => {
+                  const next = upsertSession(current, updated);
+                  setCurrentSessionId((selected) => reconcileSelectedSessionId(next, selected));
+                  return next;
+                });
+              } catch (error) {
+                handleAppError(error, "强制停止会话失败");
+              }
             }}
           />
           <Suspense fallback={<section className="panel goal-panel loading-panel">Goal Guard 组件加载中...</section>}>
