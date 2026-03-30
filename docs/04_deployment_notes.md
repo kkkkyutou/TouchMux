@@ -14,13 +14,14 @@
 2. 前端构建为静态资源。
 3. 通过 Cloudflare Tunnel、Nginx 或其他反向代理暴露。
 4. 为 `/ws/events` 与 `/ws/terminal` 打开 WebSocket 转发。
+5. 公开部署时建议显式设置 `TOUCHMUX_ALLOWED_ORIGINS`。
 
 ### 多节点版 `hub + node`
 
 1. 每台工作机器运行一个 `node` 服务。
 2. 统一入口服务器运行一个 `hub` 服务。
 3. 前端只需要暴露 Hub。
-4. Hub 与各 Node 之间通过 `TOUCHMUX_NODE_SHARED_SECRET` 对应的共享密钥通信。
+4. Hub 与各 Node 之间通过 `TOUCHMUX_NODE_SHARED_SECRET`、`x-touchmux-node-ts`、`x-touchmux-node-signature` 通信。
 5. Node 可放在内网，或通过受控反向代理暴露给 Hub。
 
 ## 本地开发
@@ -33,8 +34,12 @@
 
 - `GET /api/system/health`
   - 无需登录
-  - 返回 `tmux` 与 `codex` 可用性
+  - 只返回最小探针信息：`ok`、`runtimeMode`、`timestamp`
   - 可作为反向代理或容器探针基础
+- `GET /api/system/health/detail`
+  - 需要登录
+  - 返回依赖探针、节点状态和安全告警
+  - 适合运维排障，不建议公开给匿名访问
 
 ## 配置描述
 
@@ -86,12 +91,14 @@ docker compose up --build
 - `TOUCHMUX_FRONTEND_PORT`
 - `TOUCHMUX_BACKEND_ORIGIN`
 - `TOUCHMUX_BACKEND_WS_ORIGIN`
+- `TOUCHMUX_ALLOWED_ORIGINS`
 - `TOUCHMUX_WORKSPACE_ROOTS`
 - `TOUCHMUX_NODE_ID`
 - `TOUCHMUX_NODE_LABEL`
 - `TOUCHMUX_NODE_PUBLIC_BASE_URL`
 - `TOUCHMUX_NODE_SHARED_SECRET`
 - `TOUCHMUX_NODE_REQUEST_TIMEOUT_MS`
+- `TOUCHMUX_NODE_REQUEST_MAX_SKEW_MS`
 - `TOUCHMUX_HUB_NODES_JSON`
 - `TOUCHMUX_HUB_NODES_FILE`
 - `TOUCHMUX_DATA_DIR`

@@ -18,7 +18,15 @@ export function registerCoreRoutes({
   localRuntime,
   hubNodeService,
 }: RegisterCoreRoutesOptions): void {
-  app.get("/api/system/health", async (_request, response) => {
+  app.get("/api/system/health", (_request, response) => {
+    response.json({
+      ok: true,
+      runtimeMode: config.runtimeMode,
+      timestamp: Date.now(),
+    });
+  });
+
+  app.get("/api/system/health/detail", requireAuth, async (_request, response) => {
     if (config.runtimeMode === "hub" && hubNodeService) {
       const nodes = await hubNodeService.getNodes();
       response.json({

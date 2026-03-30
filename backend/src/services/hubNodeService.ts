@@ -7,6 +7,7 @@ import type {
   SessionSummary,
   WorkspaceEntry,
 } from "../types/models.js";
+import { createNodeRequestHeaders } from "../utils/security.js";
 
 interface JsonMessage {
   message?: string;
@@ -58,12 +59,19 @@ export class HubNodeService {
     fallbackMessage: string,
   ): Promise<T> {
     const node = this.getNodeOrThrow(nodeId);
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
     const response = await fetch(`${trimSlash(node.baseUrl)}${pathname}`, {
       ...init,
       signal: AbortSignal.timeout(this.requestTimeoutMs),
       headers: {
         "Content-Type": "application/json",
-        "x-touchmux-node-secret": node.sharedSecret ?? "",
+        ...createNodeRequestHeaders({
+          secret: node.sharedSecret ?? "",
+          method,
+          pathWithQuery: pathname,
+          body,
+        }),
         ...(init?.headers ?? {}),
       },
     });
@@ -302,10 +310,17 @@ export class HubNodeService {
   async downloadFile(nodeId: string, rootPath: string, relativePath: string): Promise<Response> {
     const node = this.getNodeOrThrow(nodeId);
     const query = new URLSearchParams({ rootPath, relativePath });
-    const response = await fetch(`${trimSlash(node.baseUrl)}/api/node/fs/download?${query.toString()}`, {
+    const pathname = `/api/node/fs/download?${query.toString()}`;
+    const response = await fetch(`${trimSlash(node.baseUrl)}${pathname}`, {
       method: "GET",
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
       headers: {
-        "x-touchmux-node-secret": node.sharedSecret ?? "",
+        ...createNodeRequestHeaders({
+          secret: node.sharedSecret ?? "",
+          method: "GET",
+          pathWithQuery: pathname,
+          body: "",
+        }),
       },
     });
     if (!response.ok) {

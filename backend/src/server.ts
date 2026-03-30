@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express from "express";
+import type { Request } from "express";
 import { config } from "./core/config.js";
 import { createAuthHandlers } from "./app/auth.js";
 import {
@@ -20,7 +21,25 @@ const appRuntime = createAppRuntime();
 ensureSecureDefaults();
 
 const app = express();
-app.use(cors());
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || config.allowedOrigins.length === 0 || config.allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
+    allowedHeaders: [
+      "Authorization",
+      "Content-Type",
+      "x-touchmux-node-secret",
+      "x-touchmux-node-ts",
+      "x-touchmux-node-signature",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  }),
+);
 app.use((request, response, next) => {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "DENY");
@@ -28,7 +47,14 @@ app.use((request, response, next) => {
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   next();
 });
-app.use(express.json({ limit: `${Math.ceil(config.maxUploadBytes * 1.5)}b` }));
+app.use(
+  express.json({
+    limit: `${Math.ceil(config.maxUploadBytes * 1.5)}b`,
+    verify(request, _response, buffer) {
+      (request as Request & { rawBody?: string }).rawBody = buffer.toString("utf8");
+    },
+  }),
+);
 
 const authHandlers = createAuthHandlers(appRuntime.auditService, appRuntime.loginRateLimiter);
 authHandlers.registerAuthRoutes(app);

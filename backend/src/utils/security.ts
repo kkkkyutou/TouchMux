@@ -1,7 +1,27 @@
 import crypto from "node:crypto";
 
 interface TokenPayload {
+  iat: number;
   exp: number;
+  jti: string;
+}
+
+interface NodeRequestSignatureInput {
+  secret: string;
+  method: string;
+  pathWithQuery: string;
+  timestampMs: number;
+  body: string;
+}
+
+interface VerifyNodeRequestSignatureInput {
+  secret: string;
+  method: string;
+  pathWithQuery: string;
+  timestamp: string;
+  body: string;
+  signature: string;
+  maxSkewMs: number;
 }
 
 function toBase64Url(input: Buffer | string): string {
@@ -18,8 +38,11 @@ export function safeEqual(left: string, right: string): boolean {
 }
 
 export function signToken(secret: string, ttlSec = 60 * 60 * 24 * 7): string {
+  const nowSec = Math.floor(Date.now() / 1000);
   const payload: TokenPayload = {
-    exp: Math.floor(Date.now() / 1000) + ttlSec,
+    iat: nowSec,
+    exp: nowSec + ttlSec,
+    jti: crypto.randomUUID(),
   };
   const body = toBase64Url(JSON.stringify(payload));
   const signature = crypto
@@ -40,8 +63,73 @@ export function verifyToken(token: string, secret: string): boolean {
   }
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString()) as TokenPayload;
-    return payload.exp > Math.floor(Date.now() / 1000);
+    return (
+      typeof payload.iat === "number" &&
+      typeof payload.exp === "number" &&
+      typeof payload.jti === "string" &&
+      payload.exp > Math.floor(Date.now() / 1000)
+    );
   } catch {
     return false;
   }
+}
+
+function buildNodeSignaturePayload({
+  method,
+  pathWithQuery,
+  timestampMs,
+  body,
+}: Omit<NodeRequestSignatureInput, "secret">): string {
+  return [method.toUpperCase(), pathWithQuery, String(timestampMs), body].join("\n");
+}
+
+export function createNodeRequestSignature(input: NodeRequestSignatureInput): string {
+  return crypto
+    .createHmac("sha256", input.secret)
+    .update(buildNodeSignaturePayload(input))
+    .digest("base64url");
+}
+
+export function createNodeRequestHeaders(input: Omit<NodeRequestSignatureInput, "timestampMs"> & { timestampMs?: number }) {
+  const timestampMs = input.timestampMs ?? Date.now();
+  return {
+    "x-touchmux-node-secret": input.secret,
+    "x-touchmux-node-ts": String(timestampMs),
+    "x-touchmux-node-signature": createNodeRequestSignature({
+      ...input,
+      timestampMs,
+    }),
+  };
+}
+
+export function verifyNodeRequestSignature({
+  secret,
+  method,
+  pathWithQuery,
+  timestamp,
+  body,
+  signature,
+  maxSkewMs,
+}: VerifyNodeRequestSignatureInput): { ok: true } | { ok: false; message: string } {
+  const timestampMs = Number(timestamp);
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+    return { ok: false, message: "节点时间戳无效" };
+  }
+  if (!signature) {
+    return { ok: false, message: "缺少节点签名" };
+  }
+  if (Math.abs(Date.now() - timestampMs) > maxSkewMs) {
+    return { ok: false, message: "节点签名已过期" };
+  }
+  const expected = createNodeRequestSignature({
+    secret,
+    method,
+    pathWithQuery,
+    timestampMs,
+    body,
+  });
+  if (!safeEqual(signature, expected)) {
+    return { ok: false, message: "节点签名校验失败" };
+  }
+  return { ok: true };
 }

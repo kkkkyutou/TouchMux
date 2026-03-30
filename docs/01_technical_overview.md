@@ -13,7 +13,7 @@ TouchMux 是一个移动优先的远程工作台，目标是通过网页操作 `
 - `node`
   - 被 Hub 管理的工作节点
   - 管理本机 `tmux`、`codex`、文件系统和 goal guard
-  - 通过共享密钥向 Hub 暴露内部接口
+  - 通过共享密钥 + 时间戳 + HMAC 签名向 Hub 暴露内部接口
 
 ## 当前架构
 
@@ -53,6 +53,13 @@ TouchMux 是一个移动优先的远程工作台，目标是通过网页操作 `
 3. 创建、关闭、文件操作等请求由 Hub 转发到目标 Node。
 4. 终端 WebSocket 由前端连到 Hub，再由 Hub 桥接到目标 Node。
 5. 会话快照由 Hub 轮询各 Node 后统一推送给前端。
+
+## 当前安全边界
+
+- 浏览器侧 CORS 现在支持 `TOUCHMUX_ALLOWED_ORIGINS` 白名单；不配置时仍保持开发友好的全开放模式。
+- `GET /api/system/health` 现在只暴露最小探针信息，详细运行信息改到登录后的 `GET /api/system/health/detail`。
+- Hub -> Node 的 HTTP 内部接口已从“仅共享密钥”升级为“共享密钥 + 时间戳 + HMAC 签名”。
+- Node 终端 WebSocket 仍使用共享密钥，当前版本更适合放在内网、Tailscale、ZeroTier 或受控代理之后。
 
 ## 当前边界
 

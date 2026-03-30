@@ -23,10 +23,15 @@ const workspaceRoots = (process.env.TOUCHMUX_WORKSPACE_ROOTS ?? os.homedir())
   .map((item) => item.trim())
   .filter(Boolean)
   .map((item) => path.resolve(item));
+const allowedOrigins = (process.env.TOUCHMUX_ALLOWED_ORIGINS ?? "")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
 
 const codexCommandRaw = process.env.TOUCHMUX_CODEX_COMMAND ?? "codex --no-alt-screen";
 const [codexExecutable, ...codexArgs] = codexCommandRaw.split(/\s+/).filter(Boolean);
 const runtimeMode = (process.env.TOUCHMUX_RUNTIME_MODE ?? "single").trim() as RuntimeMode;
+const host = process.env.TOUCHMUX_HOST ?? "0.0.0.0";
 const localNodeId = (process.env.TOUCHMUX_NODE_ID ?? "local").trim() || "local";
 const localNodeLabel =
   (process.env.TOUCHMUX_NODE_LABEL ?? (runtimeMode === "node" ? os.hostname() : "This Machine")).trim() ||
@@ -91,7 +96,9 @@ export interface AppConfig {
   loginRateLimitWindowMs: number;
   loginRateLimitMaxAttempts: number;
   maxUploadBytes: number;
+  allowedOrigins: string[];
   nodeRequestTimeoutMs: number;
+  nodeRequestMaxSkewMs: number;
   allowInsecureDefaults: boolean;
   workspaceRoots: WorkspaceEntry[];
   codexExecutable: string;
@@ -112,7 +119,7 @@ export interface ConfigSchemaEntry {
 
 export const config: AppConfig = {
   runtimeMode,
-  host: process.env.TOUCHMUX_HOST ?? "0.0.0.0",
+  host,
   port: Number(process.env.TOUCHMUX_PORT ?? 8787),
   password: process.env.TOUCHMUX_PASSWORD ?? "change-me",
   jwtSecret: process.env.TOUCHMUX_JWT_SECRET ?? "change-this-secret",
@@ -126,7 +133,9 @@ export const config: AppConfig = {
   loginRateLimitWindowMs: Number(process.env.TOUCHMUX_LOGIN_WINDOW_MS ?? 60000),
   loginRateLimitMaxAttempts: Number(process.env.TOUCHMUX_LOGIN_MAX_ATTEMPTS ?? 6),
   maxUploadBytes: Number(process.env.TOUCHMUX_MAX_UPLOAD_BYTES ?? 2 * 1024 * 1024),
+  allowedOrigins,
   nodeRequestTimeoutMs: Number(process.env.TOUCHMUX_NODE_REQUEST_TIMEOUT_MS ?? 8000),
+  nodeRequestMaxSkewMs: Number(process.env.TOUCHMUX_NODE_REQUEST_MAX_SKEW_MS ?? 60000),
   allowInsecureDefaults: process.env.TOUCHMUX_ALLOW_INSECURE_DEFAULTS === "true",
   workspaceRoots: workspaceRoots.map((rootPath) => ({
     rootPath,
@@ -156,6 +165,9 @@ export const config: AppConfig = {
     ...(process.env.TOUCHMUX_JWT_SECRET ?? "change-this-secret") === "change-this-secret"
       ? ["TOUCHMUX_JWT_SECRET 仍在使用默认值，公开部署前必须修改。"]
       : [],
+    ...(allowedOrigins.length === 0 && host !== "127.0.0.1" && host !== "localhost"
+      ? ["未配置 TOUCHMUX_ALLOWED_ORIGINS，当前浏览器跨域请求默认不做白名单限制；公开部署建议显式配置。"]
+      : []),
     ...(runtimeMode !== "single" &&
     (process.env.TOUCHMUX_PASSWORD ?? "change-me") === "change-me" &&
     !process.env.TOUCHMUX_ALLOW_INSECURE_DEFAULTS
@@ -176,6 +188,9 @@ export const config: AppConfig = {
     process.env.TOUCHMUX_NODE_SHARED_SECRET &&
     process.env.TOUCHMUX_NODE_SHARED_SECRET.trim().length < 24
       ? ["TOUCHMUX_NODE_SHARED_SECRET 长度过短，建议至少 24 个字符。"]
+      : []),
+    ...(Number(process.env.TOUCHMUX_NODE_REQUEST_MAX_SKEW_MS ?? 60000) < 5000
+      ? ["TOUCHMUX_NODE_REQUEST_MAX_SKEW_MS 过小，可能导致 Hub 与 Node 的签名校验频繁误判。"]
       : []),
     ...workspaceRoots.some((rootPath) => rootPath === path.parse(rootPath).root)
       ? ["TOUCHMUX_WORKSPACE_ROOTS 包含文件系统根目录 `/`，这会显著扩大暴露面。"]
@@ -227,6 +242,13 @@ export const configSchema: ConfigSchemaEntry[] = [
     description: "后端监听地址。",
   },
   {
+    key: "TOUCHMUX_ALLOWED_ORIGINS",
+    required: false,
+    defaultValue: "",
+    example: "https://touchmux.example.com,https://staging.example.com",
+    description: "浏览器跨域白名单；为空时允许所有来源，公开部署建议显式填写。",
+  },
+  {
     key: "TOUCHMUX_WORKSPACE_ROOTS",
     required: false,
     defaultValue: homeRoot,
@@ -267,6 +289,13 @@ export const configSchema: ConfigSchemaEntry[] = [
     defaultValue: 8000,
     example: "8000",
     description: "Hub 调用 Node HTTP 接口的超时时间，单位毫秒。",
+  },
+  {
+    key: "TOUCHMUX_NODE_REQUEST_MAX_SKEW_MS",
+    required: false,
+    defaultValue: 60000,
+    example: "60000",
+    description: "Node 校验 Hub HTTP 请求签名时允许的时间偏差窗口，单位毫秒。",
   },
   {
     key: "TOUCHMUX_HUB_NODES_JSON",
