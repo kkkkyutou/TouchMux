@@ -37,47 +37,48 @@ TouchMux 目前是一个自托管、单用户优先的 MVP。单机链路已经�
 
 ## 系统架构
 
-TouchMux 目前有三种运行角色：
+TouchMux 更适合从两个维度理解：部署模式，以及运行角色。
 
-- `single`
-  - 一个 TouchMux 实例管理一台机器。
-  - 适合最简单的自托管部署。
-- `hub`
-  - 对外统一入口。
-  - 负责聚合多台机器、代理鉴权 API、桥接终端 WebSocket。
-- `node`
-  - 被 Hub 管理的工作节点。
-  - 负责本机 `tmux`、`Codex`、文件系统和 Goal Guard。
+### 两种部署模式
 
-### 请求流
+| 模式 | 适合场景 | 形态 |
+| --- | --- | --- |
+| `single-machine` | 一台个人工作机，或者最简单的自托管方式 | 一个 TouchMux 服务直接管理一台机器 |
+| `hub-plus-node` | 一个公网入口管理多台私有工作机 | 一个 Hub 聚合多个 Node，并转发 API 与终端流量 |
+
+### 三种运行角色
+
+| 角色 | 出现在哪种模式里 | 主要职责 |
+| --- | --- | --- |
+| `single` | `single-machine` | 单机一体化角色，负责认证、界面托管、会话管理、文件访问和终端桥接 |
+| `hub` | `hub-plus-node` | 对外统一入口，负责用户鉴权、节点聚合、API 代理和终端桥接 |
+| `node` | `hub-plus-node` | 私有工作节点，负责本机 `tmux`、`Codex`、文件系统、Goal Guard 和会话运行态 |
+
+### 请求路径
 
 ```text
+单机模式
 浏览器
-  -> 前端（React + xterm.js）
-  -> 后端 API / WebSocket（Express + ws）
-  -> Session Manager / File Service / Goal Guard / SQLite
-  -> 本机 tmux + Codex
+  -> TouchMux(single)
+  -> tmux / Codex / 文件系统 / Goal Guard
 
-Hub 模式：
+Hub + Node 模式
 浏览器
-  -> Hub
-  -> 已签名的 HTTP 请求 + 终端 WebSocket 转发
-  -> Node
-  -> 目标机器上的 tmux + Codex
+  -> TouchMux(hub)
+  -> 已签名的 HTTP + 已签名的 WebSocket 握手
+  -> TouchMux(node)
+  -> tmux / Codex / 文件系统 / Goal Guard
 ```
 
 ### 代码结构
 
-- `backend/`
-  - Express API、认证、会话管理、Goal Guard、Hub / Node 路由、WebSocket 桥接
-- `frontend/`
-  - React 界面、终端视图、会话抽屉、文件浏览器、Goal Guard 编辑器
-- `docs/`
-  - 技术说明、部署说明、功能状态文档
-- `deploy/`
-  - `systemd` 服务示例
-- `scripts/`
-  - 本地开发启动脚本和 smoke 校验脚本
+| 路径 | 作用 |
+| --- | --- |
+| `backend/` | Express API、认证、会话管理、Goal Guard、Hub / Node 路由、WebSocket 桥接 |
+| `frontend/` | React 界面、终端视图、会话抽屉、文件浏览器、Goal Guard 编辑器 |
+| `docs/` | 技术说明、部署说明、功能状态文档 |
+| `deploy/` | `systemd` 服务示例 |
+| `scripts/` | 本地开发启动脚本和 smoke 校验脚本 |
 
 ## 安全说明
 
@@ -87,7 +88,8 @@ Hub 模式：
 - `GET /api/system/health` 现在只返回最小匿名探针信息。
 - `GET /api/system/health/detail` 需要登录后访问，返回依赖探针、节点状态和安全警告。
 - Hub -> Node 的内部 HTTP 请求现在使用 `TOUCHMUX_NODE_SHARED_SECRET`，并附带 `x-touchmux-node-ts`、`x-touchmux-node-signature` HMAC 签名。
-- Node 终端 WebSocket 目前仍然主要依赖共享密钥，所以 Node 更适合放在内网、Tailscale、ZeroTier 或严格受控的代理后面。
+- Hub -> Node 的终端 WebSocket 握手现在也使用同一套签名头，再进入真正的终端流。
+- Node 依然更适合放在内网、Tailscale、ZeroTier 或严格受控的代理后面。
 - 不要把 `/` 直接作为工作区根目录开放，推荐显式配置 `/home/your-user` 或共享项目目录。
 
 ## 快速开始

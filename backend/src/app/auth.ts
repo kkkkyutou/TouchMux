@@ -2,7 +2,7 @@ import type { Express, NextFunction, Request, Response } from "express";
 import { config } from "../core/config.js";
 import { AuditService } from "../services/auditService.js";
 import { LoginRateLimiter } from "../services/loginRateLimiter.js";
-import { safeEqual, signToken, verifyNodeRequestSignature, verifyToken } from "../utils/security.js";
+import { safeEqual, signToken, verifyNodeRequestHeaders, verifyToken } from "../utils/security.js";
 import { extractToken, getClientIp } from "./http.js";
 
 export type AuthMiddleware = (request: Request, response: Response, next: NextFunction) => void;
@@ -27,17 +27,11 @@ export function createAuthHandlers(
   };
 
   const requireNodeSecret: AuthMiddleware = (request, response, next) => {
-    const provided = String(request.headers["x-touchmux-node-secret"] ?? "");
-    if (!config.nodeSharedSecret || !provided || !safeEqual(provided, config.nodeSharedSecret)) {
-      response.status(401).json({ message: "节点鉴权失败" });
-      return;
-    }
-    const signatureCheck = verifyNodeRequestSignature({
+    const signatureCheck = verifyNodeRequestHeaders({
       secret: config.nodeSharedSecret,
       method: request.method,
       pathWithQuery: request.originalUrl || request.url,
-      timestamp: String(request.headers["x-touchmux-node-ts"] ?? ""),
-      signature: String(request.headers["x-touchmux-node-signature"] ?? ""),
+      headers: request.headers,
       body: typeof (request as Request & { rawBody?: string }).rawBody === "string"
         ? (request as Request & { rawBody?: string }).rawBody ?? ""
         : "",

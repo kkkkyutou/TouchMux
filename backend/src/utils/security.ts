@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { IncomingHttpHeaders } from "node:http";
 
 interface TokenPayload {
   iat: number;
@@ -21,6 +22,15 @@ interface VerifyNodeRequestSignatureInput {
   timestamp: string;
   body: string;
   signature: string;
+  maxSkewMs: number;
+}
+
+interface VerifyNodeRequestHeadersInput {
+  secret: string;
+  method: string;
+  pathWithQuery: string;
+  headers: IncomingHttpHeaders;
+  body: string;
   maxSkewMs: number;
 }
 
@@ -132,4 +142,27 @@ export function verifyNodeRequestSignature({
     return { ok: false, message: "节点签名校验失败" };
   }
   return { ok: true };
+}
+
+export function verifyNodeRequestHeaders({
+  secret,
+  method,
+  pathWithQuery,
+  headers,
+  body,
+  maxSkewMs,
+}: VerifyNodeRequestHeadersInput): { ok: true } | { ok: false; message: string } {
+  const providedSecret = String(headers["x-touchmux-node-secret"] ?? "");
+  if (!secret || !providedSecret || !safeEqual(providedSecret, secret)) {
+    return { ok: false, message: "节点鉴权失败" };
+  }
+  return verifyNodeRequestSignature({
+    secret,
+    method,
+    pathWithQuery,
+    timestamp: String(headers["x-touchmux-node-ts"] ?? ""),
+    signature: String(headers["x-touchmux-node-signature"] ?? ""),
+    body,
+    maxSkewMs,
+  });
 }

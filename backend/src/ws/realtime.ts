@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { config } from "../core/config.js";
 import type { SessionSummary } from "../types/models.js";
-import { safeEqual, verifyToken } from "../utils/security.js";
+import { createNodeRequestHeaders, verifyNodeRequestHeaders, verifyToken } from "../utils/security.js";
 import { assertHubNodeService, assertLocalRuntime, type AppRuntime } from "../app/runtime.js";
 import { trimSlash } from "../app/http.js";
 
@@ -64,13 +64,20 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
       const url = new URL(request.url ?? "", `http://${request.headers.host}`);
 
       if (url.pathname === "/ws/node/terminal") {
+        const signatureCheck = verifyNodeRequestHeaders({
+          secret: config.nodeSharedSecret,
+          method: request.method ?? "GET",
+          pathWithQuery: request.url ?? url.pathname,
+          headers: request.headers,
+          body: "",
+          maxSkewMs: config.nodeRequestMaxSkewMs,
+        });
         if (!config.nodeSharedSecret) {
           socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n");
           socket.destroy();
           return;
         }
-        const provided = String(request.headers["x-touchmux-node-secret"] ?? "");
-        if (!provided || !safeEqual(provided, config.nodeSharedSecret)) {
+        if (!signatureCheck.ok) {
           socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
           socket.destroy();
           return;
@@ -207,11 +214,15 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
       cols: String(cols),
       rows: String(rows),
     }).toString();
+    const nodeTerminalPathWithQuery = `${upstreamUrl.pathname}${upstreamUrl.search ? `?${upstreamUrl.search}` : ""}`;
 
     const upstream = new WebSocket(upstreamUrl.toString(), {
-      headers: {
-        "x-touchmux-node-secret": node.sharedSecret ?? "",
-      },
+      headers: createNodeRequestHeaders({
+        secret: node.sharedSecret ?? "",
+        method: "GET",
+        pathWithQuery: nodeTerminalPathWithQuery,
+        body: "",
+      }),
     });
     const pendingMessages: string[] = [];
     const flushPendingMessages = () => {

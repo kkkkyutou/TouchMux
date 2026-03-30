@@ -37,47 +37,48 @@ TouchMux is a self-hosted, single-user-first MVP. The single-machine workflow is
 
 ## Architecture
 
-TouchMux has three runtime roles:
+TouchMux is easier to understand in two dimensions: deployment mode and runtime role.
 
-- `single`
-  - One TouchMux instance manages one machine.
-  - Best for the simplest self-hosted deployment.
-- `hub`
-  - One public entrypoint aggregates multiple worker machines.
-  - Proxies authenticated API calls and bridges terminal WebSocket traffic.
-- `node`
-  - A private worker machine managed by a Hub.
-  - Owns local `tmux`, `Codex`, filesystem access, and Goal Guard execution.
+### Two Deployment Modes
 
-### Request Flow
+| Mode | Best for | Shape |
+| --- | --- | --- |
+| `single-machine` | one personal workstation or the simplest self-hosted setup | one TouchMux service directly manages one machine |
+| `hub-plus-node` | one public entrypoint for multiple private workstations | one Hub aggregates multiple Nodes and forwards API / terminal traffic |
+
+### Three Runtime Roles
+
+| Role | Used in | Responsibility |
+| --- | --- | --- |
+| `single` | `single-machine` mode | all-in-one role that owns auth, UI serving, session management, filesystem access, and terminal bridging on one machine |
+| `hub` | `hub-plus-node` mode | public gateway that authenticates users, aggregates nodes, proxies API calls, and bridges terminal traffic |
+| `node` | `hub-plus-node` mode | private worker that owns local `tmux`, `Codex`, filesystem access, Goal Guard, and session runtime |
+
+### Request Paths
 
 ```text
+Single-machine mode
 Browser
-  -> Frontend (React + xterm.js)
-  -> Backend API / WebSocket (Express + ws)
-  -> Session Manager / File Service / Goal Guard / SQLite
-  -> tmux + Codex on local machine
+  -> TouchMux(single)
+  -> tmux / Codex / Filesystem / Goal Guard
 
-Hub mode:
+Hub + Node mode
 Browser
-  -> Hub
-  -> signed HTTP requests + proxied WebSocket
-  -> Node
-  -> tmux + Codex on target machine
+  -> TouchMux(hub)
+  -> signed HTTP + signed WebSocket handshake
+  -> TouchMux(node)
+  -> tmux / Codex / Filesystem / Goal Guard
 ```
 
 ### Repository Layout
 
-- `backend/`
-  - Express API, auth, session management, Goal Guard, Hub / Node routing, WebSocket bridge
-- `frontend/`
-  - React UI, terminal viewport, session drawer, file browser, Goal Guard editor
-- `docs/`
-  - Technical notes, deployment notes, feature tracking
-- `deploy/`
-  - Example `systemd` service
-- `scripts/`
-  - Local dev launcher and smoke checks
+| Path | Responsibility |
+| --- | --- |
+| `backend/` | Express API, auth, session management, Goal Guard, Hub / Node routing, WebSocket bridge |
+| `frontend/` | React UI, terminal viewport, session drawer, file browser, Goal Guard editor |
+| `docs/` | technical notes, deployment notes, feature tracking |
+| `deploy/` | example `systemd` service |
+| `scripts/` | local dev launcher and smoke checks |
 
 ## Security Notes
 
@@ -87,7 +88,8 @@ This project is designed for self-hosting. It now includes a first round of prac
 - `GET /api/system/health` is now a minimal unauthenticated probe.
 - `GET /api/system/health/detail` requires login and returns dependency probes, node status, and security warnings.
 - Hub -> Node internal HTTP traffic now uses `TOUCHMUX_NODE_SHARED_SECRET` plus `x-touchmux-node-ts` and `x-touchmux-node-signature` HMAC headers.
-- Node terminal WebSocket auth still relies on the shared secret, so Nodes should stay behind a trusted network, Tailscale, ZeroTier, or a tightly controlled proxy.
+- Hub -> Node terminal WebSocket handshakes now use the same signed headers before the terminal stream is attached.
+- Nodes should still stay behind a trusted network, Tailscale, ZeroTier, or a tightly controlled proxy.
 - Do not expose `/` as a workspace root. Prefer explicit roots such as `/home/your-user` or shared project directories.
 
 ## Quick Start

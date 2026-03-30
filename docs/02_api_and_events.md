@@ -28,9 +28,22 @@
 - `GET /api/codex/history`
 - `GET /api/workspace/roots`
 
-## Node 内部 HTTP
+## Node 内部接口
 
-当运行在 `node` 模式时，TouchMux 还会额外暴露一组内部接口，供 Hub 使用。这些接口默认位于 `/api/node/*`，并通过 `x-touchmux-node-secret` 做服务级鉴权。
+当运行在 `node` 模式时，TouchMux 还会额外暴露一组内部接口，供 Hub 使用。当前内部通道分为两类：
+
+- `/api/node/*` HTTP 接口
+- `/ws/node/terminal` 终端 WebSocket
+
+它们都需要以下头部参与鉴权：
+
+- `x-touchmux-node-secret`
+- `x-touchmux-node-ts`
+- `x-touchmux-node-signature`
+
+其中 `x-touchmux-node-signature` 是基于共享密钥、请求方法、路径、时间戳和请求体计算的 HMAC 签名。
+
+### Node 内部 HTTP
 
 - `GET /api/node/system/capabilities`
 - `GET /api/node/session/list`
@@ -60,7 +73,7 @@
   - `hub` 模式下代理到目标 Node
 - `/ws/node/terminal`
   - 仅供 Hub 连接的节点终端桥接 WebSocket
-  - 需要 `x-touchmux-node-secret`
+  - 需要 `x-touchmux-node-secret`、`x-touchmux-node-ts`、`x-touchmux-node-signature`
 
 ## 会话创建模式
 
