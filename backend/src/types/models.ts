@@ -44,6 +44,15 @@ export interface ChoiceOverlay {
   detectedAt: number;
 }
 
+export interface SessionRuntimeStateRecord {
+  sessionId: string;
+  buffer: string;
+  choiceOverlay: ChoiceOverlay;
+  lastAutoResumeAt: number | null;
+  autoResumeCount: number;
+  updatedAt: number;
+}
+
 export interface ManagedSessionRecord {
   id: string;
   nodeId: string;

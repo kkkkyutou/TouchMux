@@ -5,6 +5,7 @@ import type {
   GoalGuardConfig,
   GoalState,
   ManagedSessionRecord,
+  SessionRuntimeStateRecord,
   SessionStatus,
 } from "../types/models.js";
 
@@ -17,6 +18,14 @@ const defaultGoalConfig = {
   resumePromptTemplate: "继续执行既定目标，未完成前不要停止。完成后请输出 SUCCESS。",
   allowManualStopAfterSuccess: true,
 } satisfies GoalGuardConfig;
+
+const hiddenOverlayJson = JSON.stringify({
+  visible: false,
+  source: "",
+  options: [],
+  excerpt: "",
+  detectedAt: 0,
+});
 
 function mapRow(row: Record<string, unknown>): ManagedSessionRecord {
   return {
@@ -40,6 +49,17 @@ function mapRow(row: Record<string, unknown>): ManagedSessionRecord {
   };
 }
 
+function mapRuntimeRow(row: Record<string, unknown>): SessionRuntimeStateRecord {
+  return {
+    sessionId: String(row.session_id),
+    buffer: String(row.buffer ?? ""),
+    choiceOverlay: JSON.parse(String(row.choice_overlay_json ?? hiddenOverlayJson)) as SessionRuntimeStateRecord["choiceOverlay"],
+    lastAutoResumeAt: row.last_auto_resume_at ? Number(row.last_auto_resume_at) : null,
+    autoResumeCount: Number(row.auto_resume_count ?? 0),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
 export class SessionRepository {
   listSessions(): ManagedSessionRecord[] {
     const statement = db.prepare("SELECT * FROM managed_sessions ORDER BY updated_at DESC");
@@ -50,6 +70,17 @@ export class SessionRepository {
     const statement = db.prepare("SELECT * FROM managed_sessions WHERE id = ?");
     const row = statement.get(sessionId) as Record<string, unknown> | undefined;
     return row ? mapRow(row) : null;
+  }
+
+  listRuntimeStates(): SessionRuntimeStateRecord[] {
+    const statement = db.prepare("SELECT * FROM session_runtime_state ORDER BY updated_at DESC");
+    return statement.all().map((row) => mapRuntimeRow(row as Record<string, unknown>));
+  }
+
+  getRuntimeState(sessionId: string): SessionRuntimeStateRecord | null {
+    const statement = db.prepare("SELECT * FROM session_runtime_state WHERE session_id = ?");
+    const row = statement.get(sessionId) as Record<string, unknown> | undefined;
+    return row ? mapRuntimeRow(row) : null;
   }
 
   createSession(
@@ -98,6 +129,7 @@ export class SessionRepository {
       record.goalState,
       JSON.stringify(record.goalConfig),
     );
+    this.updateRuntimeState(record.id, {});
     return record;
   }
 
@@ -134,6 +166,49 @@ export class SessionRepository {
       next.goalState,
       JSON.stringify(next.goalConfig),
       sessionId,
+    );
+    return next;
+  }
+
+  updateRuntimeState(
+    sessionId: string,
+    changes: Partial<Pick<SessionRuntimeStateRecord, "buffer" | "choiceOverlay" | "lastAutoResumeAt" | "autoResumeCount" | "updatedAt">>,
+  ): SessionRuntimeStateRecord {
+    const current = this.getRuntimeState(sessionId);
+    const next: SessionRuntimeStateRecord = {
+      sessionId,
+      buffer: changes.buffer ?? current?.buffer ?? "",
+      choiceOverlay: changes.choiceOverlay ??
+        current?.choiceOverlay ?? {
+          visible: false,
+          source: "",
+          options: [],
+          excerpt: "",
+          detectedAt: 0,
+        },
+      lastAutoResumeAt:
+        changes.lastAutoResumeAt !== undefined ? changes.lastAutoResumeAt : (current?.lastAutoResumeAt ?? null),
+      autoResumeCount: changes.autoResumeCount ?? current?.autoResumeCount ?? 0,
+      updatedAt: changes.updatedAt ?? Date.now(),
+    };
+    const statement = db.prepare(`
+      INSERT INTO session_runtime_state (
+        session_id, buffer, choice_overlay_json, last_auto_resume_at, auto_resume_count, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        buffer = excluded.buffer,
+        choice_overlay_json = excluded.choice_overlay_json,
+        last_auto_resume_at = excluded.last_auto_resume_at,
+        auto_resume_count = excluded.auto_resume_count,
+        updated_at = excluded.updated_at
+    `);
+    statement.run(
+      next.sessionId,
+      next.buffer,
+      JSON.stringify(next.choiceOverlay),
+      next.lastAutoResumeAt,
+      next.autoResumeCount,
+      next.updatedAt,
     );
     return next;
   }

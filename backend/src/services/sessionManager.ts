@@ -9,6 +9,7 @@ import type {
   CreateSessionInput,
   GoalGuardConfig,
   ManagedSessionRecord,
+  SessionRuntimeStateRecord,
   SessionSummary,
   SessionStatus,
 } from "../types/models.js";
@@ -21,6 +22,7 @@ interface RuntimeState {
   buffer: string;
   choiceOverlay: ChoiceOverlay;
   lastAutoResumeAt: number | null;
+  autoResumeCount: number;
 }
 
 const hiddenOverlay: ChoiceOverlay = {
@@ -30,6 +32,17 @@ const hiddenOverlay: ChoiceOverlay = {
   excerpt: "",
   detectedAt: 0,
 };
+
+function defaultRuntimeState(sessionId: string): SessionRuntimeStateRecord {
+  return {
+    sessionId,
+    buffer: "",
+    choiceOverlay: hiddenOverlay,
+    lastAutoResumeAt: null,
+    autoResumeCount: 0,
+    updatedAt: 0,
+  };
+}
 
 function summarizeTerminalText(value: string): string {
   return value
@@ -41,12 +54,41 @@ function summarizeTerminalText(value: string): string {
     .slice(-300);
 }
 
+function mergeRuntimeBuffer(existing: string, captured: string): string {
+  const trimmedCaptured = captured.trim();
+  if (!trimmedCaptured) {
+    return existing.slice(-30000);
+  }
+  if (!existing) {
+    return captured.slice(-30000);
+  }
+  if (existing.includes(captured)) {
+    return existing.slice(-30000);
+  }
+  if (captured.includes(existing)) {
+    return captured.slice(-30000);
+  }
+  return `${existing}\n${captured}`.slice(-30000);
+}
+
 export class SessionManager extends EventEmitter {
   private readonly runtime = new Map<string, RuntimeState>();
 
   constructor(private readonly repository: SessionRepository) {
     super();
+    this.restorePersistedRuntime();
     this.syncPersistedStatuses();
+  }
+
+  private restorePersistedRuntime(): void {
+    for (const runtime of this.repository.listRuntimeStates()) {
+      this.runtime.set(runtime.sessionId, {
+        buffer: runtime.buffer,
+        choiceOverlay: runtime.choiceOverlay,
+        lastAutoResumeAt: runtime.lastAutoResumeAt,
+        autoResumeCount: runtime.autoResumeCount,
+      });
+    }
   }
 
   private syncPersistedStatuses(): void {
@@ -65,18 +107,33 @@ export class SessionManager extends EventEmitter {
         status: nextStatus,
         goalState: nextGoalState,
       });
+      if (hasTmuxSession) {
+        this.refreshRuntimeFromTmux(session);
+      }
     }
   }
 
   private getRuntime(sessionId: string): RuntimeState {
     if (!this.runtime.has(sessionId)) {
+      const persisted = this.repository.getRuntimeState(sessionId) ?? defaultRuntimeState(sessionId);
       this.runtime.set(sessionId, {
-        buffer: "",
-        choiceOverlay: hiddenOverlay,
-        lastAutoResumeAt: null,
+        buffer: persisted.buffer,
+        choiceOverlay: persisted.choiceOverlay,
+        lastAutoResumeAt: persisted.lastAutoResumeAt,
+        autoResumeCount: persisted.autoResumeCount,
       });
     }
     return this.runtime.get(sessionId)!;
+  }
+
+  private persistRuntime(sessionId: string): void {
+    const runtime = this.getRuntime(sessionId);
+    this.repository.updateRuntimeState(sessionId, {
+      buffer: runtime.buffer,
+      choiceOverlay: runtime.choiceOverlay,
+      lastAutoResumeAt: runtime.lastAutoResumeAt,
+      autoResumeCount: runtime.autoResumeCount,
+    });
   }
 
   private emitSession(sessionId: string): void {
@@ -141,6 +198,35 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  private captureTmuxPane(sessionName: string): string | null {
+    const result = spawnSync("tmux", ["capture-pane", "-p", "-t", sessionName, "-S", "-200"], {
+      stdio: "pipe",
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      return null;
+    }
+    return result.stdout;
+  }
+
+  private refreshRuntimeFromTmux(session: ManagedSessionRecord): void {
+    const captured = this.captureTmuxPane(session.tmuxSessionName);
+    if (!captured) {
+      return;
+    }
+    const runtime = this.getRuntime(session.id);
+    runtime.buffer = mergeRuntimeBuffer(runtime.buffer, captured);
+    runtime.choiceOverlay = detectChoiceOverlay(runtime.buffer);
+    this.persistRuntime(session.id);
+    const nextPreview = summarizeTerminalText(runtime.buffer);
+    if (nextPreview && nextPreview !== session.lastOutputPreview) {
+      this.repository.updateSession(session.id, {
+        lastOutputPreview: nextPreview,
+        updatedAt: session.updatedAt,
+      });
+    }
+  }
+
   createSession(input: CreateSessionInput): SessionSummary {
     const absoluteCwd = this.ensureCwd(input);
     const relativeCwd = path.relative(input.workspaceRoot, absoluteCwd) || ".";
@@ -168,6 +254,8 @@ export class SessionManager extends EventEmitter {
         idleTimeoutSec: config.defaultIdleTimeoutSec,
       },
     });
+    this.getRuntime(created.id);
+    this.persistRuntime(created.id);
     this.repository.logAudit("session.created", created, created.id);
     this.emitSession(created.id);
     return this.toSummary(created);
@@ -215,6 +303,7 @@ export class SessionManager extends EventEmitter {
     if (!this.hasTmuxSession(session.tmuxSessionName)) {
       throw new Error("tmux 会话不存在，无法附着");
     }
+    this.refreshRuntimeFromTmux(session);
     const pty = spawn("tmux", ["attach-session", "-t", session.tmuxSessionName], {
       name: "xterm-256color",
       cols,
@@ -243,6 +332,7 @@ export class SessionManager extends EventEmitter {
     const runtime = this.getRuntime(sessionId);
     runtime.buffer = `${runtime.buffer}${chunk}`.slice(-30000);
     runtime.choiceOverlay = detectChoiceOverlay(runtime.buffer);
+    this.persistRuntime(sessionId);
     const updated = this.repository.updateSession(sessionId, {
       status: session.goalState === "goal_satisfied" ? "goal_satisfied" : "running",
       lastOutputAt: Date.now(),
@@ -356,6 +446,8 @@ export class SessionManager extends EventEmitter {
     }
     const runtime = this.getRuntime(sessionId);
     runtime.lastAutoResumeAt = Date.now();
+    runtime.autoResumeCount += 1;
+    this.persistRuntime(sessionId);
     const prompt =
       session.goalConfig.resumePromptTemplate ||
       "继续执行既定目标，未完成前不要停止；完成后输出成功标记。";
@@ -363,6 +455,7 @@ export class SessionManager extends EventEmitter {
     const updated = this.repository.updateSession(sessionId, {
       status: "auto_resuming",
       goalState: "auto_resuming",
+      lastOutputAt: runtime.lastAutoResumeAt,
     });
     this.repository.logAudit("goal.auto_resume", { prompt }, sessionId);
     this.emitSession(sessionId);

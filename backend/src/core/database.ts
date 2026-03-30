@@ -53,3 +53,26 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 `);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS session_runtime_state (
+    session_id TEXT PRIMARY KEY,
+    buffer TEXT NOT NULL DEFAULT '',
+    choice_overlay_json TEXT NOT NULL,
+    last_auto_resume_at INTEGER,
+    auto_resume_count INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
+`);
+
+ensureColumn(
+  "session_runtime_state",
+  "last_auto_resume_at",
+  "ALTER TABLE session_runtime_state ADD COLUMN last_auto_resume_at INTEGER;",
+);
+
+ensureColumn(
+  "session_runtime_state",
+  "auto_resume_count",
+  "ALTER TABLE session_runtime_state ADD COLUMN auto_resume_count INTEGER NOT NULL DEFAULT 0;",
+);

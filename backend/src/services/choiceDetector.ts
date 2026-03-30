@@ -23,7 +23,13 @@ function buildOverlay(source: string, excerpt: string, options: ChoiceOption[]):
 }
 
 export function detectChoiceOverlay(buffer: string): ChoiceOverlay {
-  const excerpt = buffer.slice(-1200);
+  const excerpt = buffer
+    .slice(-4000)
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[@-_]/g, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .slice(-1200);
   const numberedMatches = [...excerpt.matchAll(/(?:^|\n)\s*(\d+)\.\s+([^\n]+)/g)];
   if (numberedMatches.length >= 2 && numberedMatches.length <= 6) {
     const options = numberedMatches.map((match) => ({
