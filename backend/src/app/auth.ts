@@ -2,6 +2,7 @@ import type { Express, NextFunction, Request, Response } from "express";
 import { config } from "../core/config.js";
 import { AuditService } from "../services/auditService.js";
 import { LoginRateLimiter } from "../services/loginRateLimiter.js";
+import type { NodeRequestReplayGuard } from "../services/nodeRequestReplayGuard.js";
 import { safeEqual, signToken, verifyNodeRequestHeaders, verifyToken } from "../utils/security.js";
 import { extractToken, getClientIp } from "./http.js";
 
@@ -16,6 +17,7 @@ interface AuthHandlers {
 export function createAuthHandlers(
   auditService: AuditService,
   loginRateLimiter: LoginRateLimiter,
+  nodeRequestReplayGuard: NodeRequestReplayGuard,
 ): AuthHandlers {
   const requireAuth: AuthMiddleware = (request, response, next) => {
     const token = extractToken(request);
@@ -36,6 +38,7 @@ export function createAuthHandlers(
         ? (request as Request & { rawBody?: string }).rawBody ?? ""
         : "",
       maxSkewMs: config.nodeRequestMaxSkewMs,
+      replayGuard: nodeRequestReplayGuard,
     });
     if (!signatureCheck.ok) {
       response.status(401).json({ message: signatureCheck.message });

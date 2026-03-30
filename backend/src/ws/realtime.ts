@@ -8,7 +8,7 @@ import { assertHubNodeService, assertLocalRuntime, type AppRuntime } from "../ap
 import { trimSlash } from "../app/http.js";
 
 export function setupRealtime(server: Server, appRuntime: AppRuntime): { refreshHubSnapshot: () => Promise<void> } {
-  const { localRuntime, hubNodeService } = appRuntime;
+  const { localRuntime, hubNodeService, nodeRequestReplayGuard } = appRuntime;
   const terminalWss = new WebSocketServer({ noServer: true });
   const eventWss = new WebSocketServer({ noServer: true });
   const nodeTerminalWss = new WebSocketServer({ noServer: true });
@@ -71,6 +71,7 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
           headers: request.headers,
           body: "",
           maxSkewMs: config.nodeRequestMaxSkewMs,
+          replayGuard: nodeRequestReplayGuard,
         });
         if (!config.nodeSharedSecret) {
           socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n");
@@ -214,7 +215,7 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
       cols: String(cols),
       rows: String(rows),
     }).toString();
-    const nodeTerminalPathWithQuery = `${upstreamUrl.pathname}${upstreamUrl.search ? `?${upstreamUrl.search}` : ""}`;
+    const nodeTerminalPathWithQuery = `${upstreamUrl.pathname}${upstreamUrl.search}`;
 
     const upstream = new WebSocket(upstreamUrl.toString(), {
       headers: createNodeRequestHeaders({

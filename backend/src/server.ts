@@ -35,6 +35,7 @@ app.use(
       "Content-Type",
       "x-touchmux-node-secret",
       "x-touchmux-node-ts",
+      "x-touchmux-node-nonce",
       "x-touchmux-node-signature",
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -56,7 +57,11 @@ app.use(
   }),
 );
 
-const authHandlers = createAuthHandlers(appRuntime.auditService, appRuntime.loginRateLimiter);
+const authHandlers = createAuthHandlers(
+  appRuntime.auditService,
+  appRuntime.loginRateLimiter,
+  appRuntime.nodeRequestReplayGuard,
+);
 authHandlers.registerAuthRoutes(app);
 
 registerCoreRoutes({

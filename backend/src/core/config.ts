@@ -99,6 +99,7 @@ export interface AppConfig {
   allowedOrigins: string[];
   nodeRequestTimeoutMs: number;
   nodeRequestMaxSkewMs: number;
+  nodeRequestReplayCacheLimit: number;
   allowInsecureDefaults: boolean;
   workspaceRoots: WorkspaceEntry[];
   codexExecutable: string;
@@ -136,6 +137,7 @@ export const config: AppConfig = {
   allowedOrigins,
   nodeRequestTimeoutMs: Number(process.env.TOUCHMUX_NODE_REQUEST_TIMEOUT_MS ?? 8000),
   nodeRequestMaxSkewMs: Number(process.env.TOUCHMUX_NODE_REQUEST_MAX_SKEW_MS ?? 60000),
+  nodeRequestReplayCacheLimit: Number(process.env.TOUCHMUX_NODE_REQUEST_REPLAY_CACHE_LIMIT ?? 10000),
   allowInsecureDefaults: process.env.TOUCHMUX_ALLOW_INSECURE_DEFAULTS === "true",
   workspaceRoots: workspaceRoots.map((rootPath) => ({
     rootPath,
@@ -191,6 +193,9 @@ export const config: AppConfig = {
       : []),
     ...(Number(process.env.TOUCHMUX_NODE_REQUEST_MAX_SKEW_MS ?? 60000) < 5000
       ? ["TOUCHMUX_NODE_REQUEST_MAX_SKEW_MS 过小，可能导致 Hub 与 Node 的签名校验频繁误判。"]
+      : []),
+    ...(Number(process.env.TOUCHMUX_NODE_REQUEST_REPLAY_CACHE_LIMIT ?? 10000) < 512
+      ? ["TOUCHMUX_NODE_REQUEST_REPLAY_CACHE_LIMIT 过小，较忙的 Hub + Node 场景下可能误伤正常请求。"]
       : []),
     ...workspaceRoots.some((rootPath) => rootPath === path.parse(rootPath).root)
       ? ["TOUCHMUX_WORKSPACE_ROOTS 包含文件系统根目录 `/`，这会显著扩大暴露面。"]
@@ -296,6 +301,13 @@ export const configSchema: ConfigSchemaEntry[] = [
     defaultValue: 60000,
     example: "60000",
     description: "Node 校验 Hub HTTP 请求签名时允许的时间偏差窗口，单位毫秒。",
+  },
+  {
+    key: "TOUCHMUX_NODE_REQUEST_REPLAY_CACHE_LIMIT",
+    required: false,
+    defaultValue: 10000,
+    example: "10000",
+    description: "Node 用于防重放的 nonce 缓存上限；达到上限后会淘汰最旧记录。",
   },
   {
     key: "TOUCHMUX_HUB_NODES_JSON",

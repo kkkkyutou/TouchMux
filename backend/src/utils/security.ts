@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
+import type { NodeRequestReplayGuard } from "../services/nodeRequestReplayGuard.js";
 
 interface TokenPayload {
   iat: number;
@@ -12,6 +13,7 @@ interface NodeRequestSignatureInput {
   method: string;
   pathWithQuery: string;
   timestampMs: number;
+  nonce: string;
   body: string;
 }
 
@@ -20,6 +22,7 @@ interface VerifyNodeRequestSignatureInput {
   method: string;
   pathWithQuery: string;
   timestamp: string;
+  nonce: string;
   body: string;
   signature: string;
   maxSkewMs: number;
@@ -32,6 +35,7 @@ interface VerifyNodeRequestHeadersInput {
   headers: IncomingHttpHeaders;
   body: string;
   maxSkewMs: number;
+  replayGuard?: NodeRequestReplayGuard;
 }
 
 function toBase64Url(input: Buffer | string): string {
@@ -88,9 +92,10 @@ function buildNodeSignaturePayload({
   method,
   pathWithQuery,
   timestampMs,
+  nonce,
   body,
 }: Omit<NodeRequestSignatureInput, "secret">): string {
-  return [method.toUpperCase(), pathWithQuery, String(timestampMs), body].join("\n");
+  return [method.toUpperCase(), pathWithQuery, String(timestampMs), nonce, body].join("\n");
 }
 
 export function createNodeRequestSignature(input: NodeRequestSignatureInput): string {
@@ -100,14 +105,17 @@ export function createNodeRequestSignature(input: NodeRequestSignatureInput): st
     .digest("base64url");
 }
 
-export function createNodeRequestHeaders(input: Omit<NodeRequestSignatureInput, "timestampMs"> & { timestampMs?: number }) {
+export function createNodeRequestHeaders(input: Omit<NodeRequestSignatureInput, "timestampMs" | "nonce"> & { timestampMs?: number }) {
   const timestampMs = input.timestampMs ?? Date.now();
+  const nonce = crypto.randomUUID();
   return {
     "x-touchmux-node-secret": input.secret,
     "x-touchmux-node-ts": String(timestampMs),
+    "x-touchmux-node-nonce": nonce,
     "x-touchmux-node-signature": createNodeRequestSignature({
       ...input,
       timestampMs,
+      nonce,
     }),
   };
 }
@@ -117,6 +125,7 @@ export function verifyNodeRequestSignature({
   method,
   pathWithQuery,
   timestamp,
+  nonce,
   body,
   signature,
   maxSkewMs,
@@ -128,6 +137,9 @@ export function verifyNodeRequestSignature({
   if (!signature) {
     return { ok: false, message: "缺少节点签名" };
   }
+  if (!nonce) {
+    return { ok: false, message: "缺少节点 nonce" };
+  }
   if (Math.abs(Date.now() - timestampMs) > maxSkewMs) {
     return { ok: false, message: "节点签名已过期" };
   }
@@ -136,6 +148,7 @@ export function verifyNodeRequestSignature({
     method,
     pathWithQuery,
     timestampMs,
+    nonce,
     body,
   });
   if (!safeEqual(signature, expected)) {
@@ -151,18 +164,35 @@ export function verifyNodeRequestHeaders({
   headers,
   body,
   maxSkewMs,
+  replayGuard,
 }: VerifyNodeRequestHeadersInput): { ok: true } | { ok: false; message: string } {
   const providedSecret = String(headers["x-touchmux-node-secret"] ?? "");
   if (!secret || !providedSecret || !safeEqual(providedSecret, secret)) {
     return { ok: false, message: "节点鉴权失败" };
   }
-  return verifyNodeRequestSignature({
+  const signatureCheck = verifyNodeRequestSignature({
     secret,
     method,
     pathWithQuery,
     timestamp: String(headers["x-touchmux-node-ts"] ?? ""),
+    nonce: String(headers["x-touchmux-node-nonce"] ?? "").trim(),
     signature: String(headers["x-touchmux-node-signature"] ?? ""),
     body,
     maxSkewMs,
   });
+  if (!signatureCheck.ok) {
+    return signatureCheck;
+  }
+  const nonce = String(headers["x-touchmux-node-nonce"] ?? "").trim();
+  if (!nonce) {
+    return { ok: false, message: "缺少节点 nonce" };
+  }
+  if (nonce.length > 128) {
+    return { ok: false, message: "节点 nonce 非法" };
+  }
+  const timestampMs = Number(headers["x-touchmux-node-ts"] ?? "");
+  if (replayGuard && !replayGuard.consume(nonce, timestampMs)) {
+    return { ok: false, message: "节点请求疑似重放" };
+  }
+  return { ok: true };
 }

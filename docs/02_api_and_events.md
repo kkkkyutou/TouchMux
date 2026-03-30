@@ -39,9 +39,10 @@
 
 - `x-touchmux-node-secret`
 - `x-touchmux-node-ts`
+- `x-touchmux-node-nonce`
 - `x-touchmux-node-signature`
 
-其中 `x-touchmux-node-signature` 是基于共享密钥、请求方法、路径、时间戳和请求体计算的 HMAC 签名。
+其中 `x-touchmux-node-signature` 是基于共享密钥、请求方法、路径、时间戳、nonce 和请求体计算的 HMAC 签名；Node 会缓存最近见过的 nonce 以拒绝重放请求。
 
 ### Node 内部 HTTP
 
@@ -73,7 +74,7 @@
   - `hub` 模式下代理到目标 Node
 - `/ws/node/terminal`
   - 仅供 Hub 连接的节点终端桥接 WebSocket
-  - 需要 `x-touchmux-node-secret`、`x-touchmux-node-ts`、`x-touchmux-node-signature`
+  - 需要 `x-touchmux-node-secret`、`x-touchmux-node-ts`、`x-touchmux-node-nonce`、`x-touchmux-node-signature`
 
 ## 会话创建模式
 

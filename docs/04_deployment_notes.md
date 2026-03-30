@@ -21,7 +21,7 @@
 1. 每台工作机器运行一个 `node` 服务。
 2. 统一入口服务器运行一个 `hub` 服务。
 3. 前端只需要暴露 Hub。
-4. Hub 与各 Node 之间的 HTTP 和终端 WebSocket 握手都通过 `TOUCHMUX_NODE_SHARED_SECRET`、`x-touchmux-node-ts`、`x-touchmux-node-signature` 通信。
+4. Hub 与各 Node 之间的 HTTP 和终端 WebSocket 握手都通过 `TOUCHMUX_NODE_SHARED_SECRET`、`x-touchmux-node-ts`、`x-touchmux-node-nonce`、`x-touchmux-node-signature` 通信。
 5. Node 可放在内网，或通过受控反向代理暴露给 Hub。
 
 ## 本地开发
@@ -99,6 +99,7 @@ docker compose up --build
 - `TOUCHMUX_NODE_SHARED_SECRET`
 - `TOUCHMUX_NODE_REQUEST_TIMEOUT_MS`
 - `TOUCHMUX_NODE_REQUEST_MAX_SKEW_MS`
+- `TOUCHMUX_NODE_REQUEST_REPLAY_CACHE_LIMIT`
 - `TOUCHMUX_HUB_NODES_JSON`
 - `TOUCHMUX_HUB_NODES_FILE`
 - `TOUCHMUX_DATA_DIR`

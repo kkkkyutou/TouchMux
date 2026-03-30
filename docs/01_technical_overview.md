@@ -58,8 +58,8 @@ TouchMux 是一个移动优先的远程工作台，目标是通过网页操作 `
 
 - 浏览器侧 CORS 现在支持 `TOUCHMUX_ALLOWED_ORIGINS` 白名单；不配置时仍保持开发友好的全开放模式。
 - `GET /api/system/health` 现在只暴露最小探针信息，详细运行信息改到登录后的 `GET /api/system/health/detail`。
-- Hub -> Node 的 HTTP 内部接口已从“仅共享密钥”升级为“共享密钥 + 时间戳 + HMAC 签名”。
-- Hub -> Node 的终端 WebSocket 握手现在也纳入同一套签名校验。
+- Hub -> Node 的 HTTP 内部接口已升级为“共享密钥 + 时间戳 + nonce + HMAC 签名”。
+- Hub -> Node 的终端 WebSocket 握手现在也纳入同一套签名和防重放校验。
 - Node 仍更适合放在内网、Tailscale、ZeroTier 或受控代理之后，而不是直接裸露公网。
 
 ## 当前边界

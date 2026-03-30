@@ -6,6 +6,7 @@ import { FileService } from "../services/fileService.js";
 import { GoalGuardService } from "../services/goalGuardService.js";
 import { HubNodeService } from "../services/hubNodeService.js";
 import { LoginRateLimiter } from "../services/loginRateLimiter.js";
+import { NodeRequestReplayGuard } from "../services/nodeRequestReplayGuard.js";
 import { SessionManager } from "../services/sessionManager.js";
 import { SessionRepository } from "../services/sessionRepository.js";
 import type { NodeSummary } from "../types/models.js";
@@ -21,6 +22,7 @@ export interface LocalRuntime {
 export interface AppRuntime {
   auditService: AuditService;
   loginRateLimiter: LoginRateLimiter;
+  nodeRequestReplayGuard: NodeRequestReplayGuard;
   localRuntime: LocalRuntime | null;
   hubNodeService: HubNodeService | null;
 }
@@ -28,6 +30,10 @@ export interface AppRuntime {
 export function createAppRuntime(): AppRuntime {
   const auditService = new AuditService(config.dataDir);
   const loginRateLimiter = new LoginRateLimiter(config.loginRateLimitMaxAttempts, config.loginRateLimitWindowMs);
+  const nodeRequestReplayGuard = new NodeRequestReplayGuard(
+    config.nodeRequestMaxSkewMs,
+    config.nodeRequestReplayCacheLimit,
+  );
   const localRuntime: LocalRuntime | null =
     config.runtimeMode === "hub"
       ? null
@@ -47,6 +53,7 @@ export function createAppRuntime(): AppRuntime {
   return {
     auditService,
     loginRateLimiter,
+    nodeRequestReplayGuard,
     localRuntime,
     hubNodeService:
       config.runtimeMode === "hub" ? new HubNodeService(config.hubNodes, config.nodeRequestTimeoutMs) : null,
