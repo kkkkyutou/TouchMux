@@ -76,6 +76,12 @@ docker compose up --build
 4. 拷贝服务文件到 `/etc/systemd/system/`
 5. `systemctl daemon-reload && systemctl enable --now touchmux`
 
+重要：
+
+- TouchMux 启动 `codex` 时，会默认使用服务进程自己的 `HOME`。
+- 如果你希望网页终端直接复用“当前机器上已经登录好的 Codex”，最稳妥的方式是让 TouchMux 也运行在同一个 Linux 用户下。
+- 如果必须用独立服务用户，请显式设置 `TOUCHMUX_SESSION_HOME`，并确认该服务用户对这个目录以及其中的 `.codex` 具备读写权限。
+
 ## Cloudflare / 反向代理注意点
 
 - 保持 WebSocket Upgrade 头透传
@@ -93,6 +99,7 @@ docker compose up --build
 - `TOUCHMUX_BACKEND_WS_ORIGIN`
 - `TOUCHMUX_ALLOWED_ORIGINS`
 - `TOUCHMUX_WORKSPACE_ROOTS`
+- `TOUCHMUX_SESSION_HOME`
 - `TOUCHMUX_NODE_ID`
 - `TOUCHMUX_NODE_LABEL`
 - `TOUCHMUX_NODE_PUBLIC_BASE_URL`

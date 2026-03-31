@@ -8,6 +8,7 @@ import type { NodeConfigEntry, RuntimeMode, WorkspaceEntry } from "../types/mode
 const backendRoot = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const projectRoot = path.resolve(backendRoot, "..");
 const homeRoot = os.homedir();
+const sessionHome = path.resolve(process.env.TOUCHMUX_SESSION_HOME ?? homeRoot);
 
 dotenv.config({ path: path.join(projectRoot, ".env") });
 dotenv.config({ path: path.join(backendRoot, ".env") });
@@ -90,6 +91,7 @@ export interface AppConfig {
   dataDir: string;
   historyFile: string;
   sessionsDir: string;
+  sessionHome: string;
   shell: string;
   goalGuardIntervalMs: number;
   defaultIdleTimeoutSec: number;
@@ -126,8 +128,9 @@ export const config: AppConfig = {
   jwtSecret: process.env.TOUCHMUX_JWT_SECRET ?? "change-this-secret",
   tokenTtlSec: Number(process.env.TOUCHMUX_TOKEN_TTL_SEC ?? 60 * 60 * 24 * 7),
   dataDir,
-  historyFile: path.join(os.homedir(), ".codex", "history.jsonl"),
-  sessionsDir: path.join(os.homedir(), ".codex", "sessions"),
+  historyFile: path.join(sessionHome, ".codex", "history.jsonl"),
+  sessionsDir: path.join(sessionHome, ".codex", "sessions"),
+  sessionHome,
   shell: process.env.TOUCHMUX_DEFAULT_SHELL ?? "/bin/bash",
   goalGuardIntervalMs: Number(process.env.TOUCHMUX_GOAL_GUARD_INTERVAL_MS ?? 15000),
   defaultIdleTimeoutSec: Number(process.env.TOUCHMUX_IDLE_TIMEOUT_SEC ?? 90),
@@ -167,6 +170,9 @@ export const config: AppConfig = {
     ...(process.env.TOUCHMUX_JWT_SECRET ?? "change-this-secret") === "change-this-secret"
       ? ["TOUCHMUX_JWT_SECRET 仍在使用默认值，公开部署前必须修改。"]
       : [],
+    ...(sessionHome !== homeRoot
+      ? [`TOUCHMUX_SESSION_HOME 当前为 ${sessionHome}；请确认服务进程对该目录及其 .codex 子目录有读写权限。`]
+      : []),
     ...(allowedOrigins.length === 0 && host !== "127.0.0.1" && host !== "localhost"
       ? ["未配置 TOUCHMUX_ALLOWED_ORIGINS，当前浏览器跨域请求默认不做白名单限制；公开部署建议显式配置。"]
       : []),
@@ -259,6 +265,13 @@ export const configSchema: ConfigSchemaEntry[] = [
     defaultValue: homeRoot,
     example: "/home/your-user,/srv/shared",
     description: "允许在网页中访问的根目录列表，默认使用当前 Linux 用户主目录。",
+  },
+  {
+    key: "TOUCHMUX_SESSION_HOME",
+    required: false,
+    defaultValue: homeRoot,
+    example: "/home/your-user",
+    description: "TouchMux 会话默认使用的 HOME；Codex 登录态、历史索引和 sessions 目录都跟随这里。",
   },
   {
     key: "TOUCHMUX_NODE_ID",

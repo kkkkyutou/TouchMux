@@ -156,8 +156,14 @@ export class SessionManager extends EventEmitter {
 
   private buildCodexCommand(input: CreateSessionInput): string {
     const baseArgs = [...config.codexArgs];
+    const envPrefix = [
+      "env",
+      `HOME=${config.sessionHome}`,
+      `TOUCHMUX_SESSION_HOME=${config.sessionHome}`,
+      ...(process.env.PATH ? [`PATH=${process.env.PATH}`] : []),
+    ];
     if (input.mode === "new") {
-      const args = [config.codexExecutable, ...baseArgs];
+      const args = [...envPrefix, config.codexExecutable, ...baseArgs];
       if (input.prompt?.trim()) {
         args.push(input.prompt.trim());
       }
@@ -169,7 +175,7 @@ export class SessionManager extends EventEmitter {
     }
 
     const subcommand = input.mode === "resume" ? "resume" : "fork";
-    const args = [config.codexExecutable, subcommand, input.sourceCodexSessionId, ...baseArgs];
+    const args = [...envPrefix, config.codexExecutable, subcommand, input.sourceCodexSessionId, ...baseArgs];
     if (input.prompt?.trim()) {
       args.push(input.prompt.trim());
     }
@@ -234,7 +240,19 @@ export class SessionManager extends EventEmitter {
     const sessionId = crypto.randomUUID();
     const tmuxSessionName = `touchmux_${sessionId.slice(0, 8)}`;
 
-    this.runTmux(["new-session", "-d", "-s", tmuxSessionName, "-c", absoluteCwd]);
+    this.runTmux([
+      "new-session",
+      "-d",
+      "-s",
+      tmuxSessionName,
+      "-c",
+      absoluteCwd,
+      "-e",
+      `HOME=${config.sessionHome}`,
+      "-e",
+      `TOUCHMUX_SESSION_HOME=${config.sessionHome}`,
+      ...(process.env.PATH ? ["-e", `PATH=${process.env.PATH}`] : []),
+    ]);
     this.sendLiteral(tmuxSessionName, command, true);
 
     const created = this.repository.createSession({
@@ -311,6 +329,8 @@ export class SessionManager extends EventEmitter {
       cwd: this.resolveSessionCwd(session),
       env: {
         ...process.env,
+        HOME: config.sessionHome,
+        TOUCHMUX_SESSION_HOME: config.sessionHome,
         TERM: "xterm-256color",
       },
     });

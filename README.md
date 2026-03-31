@@ -70,6 +70,8 @@ TOUCHMUX_BACKEND_WS_ORIGIN=ws://127.0.0.1:8787
 # Optional in local dev. Set this in public deployments.
 # TOUCHMUX_ALLOWED_ORIGINS=https://touchmux.example.com
 # TOUCHMUX_WORKSPACE_ROOTS=/home/your-user,/srv/shared
+# If you want to reuse an existing logged-in Codex home, set this explicitly.
+# TOUCHMUX_SESSION_HOME=/home/your-user
 ```
 
 Open:
@@ -155,6 +157,7 @@ ingress:
 - `TOUCHMUX_ALLOWED_ORIGINS` should be set for public deployments.
 - `GET /api/system/health` is a minimal anonymous probe.
 - `GET /api/system/health/detail` requires login.
+- Codex auth, history import, and session state follow `TOUCHMUX_SESSION_HOME`; if unset they follow the backend process HOME.
 - Hub -> Node HTTP and terminal WebSocket handshakes use shared-secret HMAC headers with timestamp and nonce:
   - `x-touchmux-node-secret`
   - `x-touchmux-node-ts`

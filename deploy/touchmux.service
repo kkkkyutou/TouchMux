@@ -9,6 +9,8 @@ EnvironmentFile=/opt/touchmux/.env
 ExecStart=/usr/bin/node /opt/touchmux/backend/dist/server.js
 Restart=always
 RestartSec=5
+# 推荐直接使用已经登录过 Codex 的 Linux 用户。
+# 如果使用独立服务用户，请至少保证 TOUCHMUX_SESSION_HOME 指向一个可读写的 Codex home。
 User=touchmux
 Group=touchmux
 

@@ -70,6 +70,8 @@ TOUCHMUX_BACKEND_WS_ORIGIN=ws://127.0.0.1:8787
 # 本地开发可留空；公开部署建议设置成真实域名。
 # TOUCHMUX_ALLOWED_ORIGINS=https://touchmux.example.com
 # TOUCHMUX_WORKSPACE_ROOTS=/home/your-user,/srv/shared
+# 如果你希望复用某个已登录的 Codex home，可显式指定这个 HOME。
+# TOUCHMUX_SESSION_HOME=/home/your-user
 ```
 
 打开：
@@ -155,6 +157,7 @@ ingress:
 - 公开部署时建议显式设置 `TOUCHMUX_ALLOWED_ORIGINS`。
 - `GET /api/system/health` 只暴露最小匿名探针。
 - `GET /api/system/health/detail` 需要登录。
+- Codex 登录态、历史导入和 sessions 目录默认跟随 `TOUCHMUX_SESSION_HOME`，未设置时跟随后端进程自己的 HOME。
 - Hub -> Node 的 HTTP 和终端 WebSocket 握手现在都使用共享密钥 + 时间戳 + nonce + 签名：
   - `x-touchmux-node-secret`
   - `x-touchmux-node-ts`
