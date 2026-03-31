@@ -17,6 +17,7 @@
     "smoke:single": "node scripts/smoke-single.mjs",
     "smoke:hub-node": "node scripts/smoke-hub-node.mjs",
     "smoke:goal-guard-typing": "node scripts/smoke-goal-guard-typing.mjs",
+    "smoke:goal-guard-background": "node scripts/smoke-goal-guard-background.mjs",
     "build": "npm run build -w backend && npm run build -w frontend",
     "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend"
   }

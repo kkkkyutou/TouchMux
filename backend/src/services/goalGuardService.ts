@@ -29,18 +29,23 @@ export class GoalGuardService {
       if (!session.goalConfig.enabled || session.status === "closed") {
         continue;
       }
-      const success = await this.sessionManager.evaluateGoal(session.id);
+      this.sessionManager.syncSessionFromTmux(session.id, true);
+      const current = this.repository.getSession(session.id);
+      if (!current || !current.goalConfig.enabled || current.status === "closed") {
+        continue;
+      }
+      const success = await this.sessionManager.evaluateGoal(current.id);
       if (success) {
         continue;
       }
-      const idleSince = this.sessionManager.getLastActivityAt(session.id) ?? session.createdAt;
-      if (Date.now() - idleSince < session.goalConfig.idleTimeoutSec * 1000) {
+      const idleSince = this.sessionManager.getLastActivityAt(current.id) ?? current.createdAt;
+      if (Date.now() - idleSince < current.goalConfig.idleTimeoutSec * 1000) {
         continue;
       }
-      if (!this.sessionManager.hasTmuxSession(session.tmuxSessionName)) {
+      if (!this.sessionManager.hasTmuxSession(current.tmuxSessionName)) {
         continue;
       }
-      this.sessionManager.autoResume(session.id);
+      this.sessionManager.autoResume(current.id);
     }
   }
 }

@@ -775,6 +775,35 @@ code {
   gap: 0.85rem;
 }
 
+.goal-guard-state-card {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.9rem 1rem;
+  border-radius: 18px;
+  border: 1px solid rgba(18, 34, 25, 0.08);
+  background: rgba(255, 252, 246, 0.92);
+}
+
+.goal-guard-state-card strong {
+  font-size: 1rem;
+  color: var(--ink-strong);
+}
+
+.goal-guard-state-card span {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.goal-guard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.goal-guard-actions > * {
+  flex: 1 1 10rem;
+}
+
 .schema-card {
   border: 1px solid rgba(18, 34, 25, 0.08);
   border-radius: 18px;

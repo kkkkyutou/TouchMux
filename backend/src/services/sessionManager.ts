@@ -8,6 +8,7 @@ import type {
   ChoiceOverlay,
   CreateSessionInput,
   GoalGuardConfig,
+  GoalState,
   ManagedSessionRecord,
   SessionSummary,
   SessionStatus,
@@ -70,6 +71,17 @@ function mergeRuntimeBuffer(existing: string, captured: string): string {
   return `${existing}\n${captured}`.slice(-30000);
 }
 
+function nextEnabledGoalState(current: GoalState): GoalState {
+  switch (current) {
+    case "goal_satisfied":
+    case "manual_override_stopped":
+    case "failed_check":
+      return current;
+    default:
+      return "idle_waiting";
+  }
+}
+
 export class SessionManager extends EventEmitter {
   private readonly runtime = new Map<string, RuntimeState>();
 
@@ -96,11 +108,13 @@ export class SessionManager extends EventEmitter {
       const hasTmuxSession = this.hasTmuxSession(session.tmuxSessionName);
       const nextStatus: SessionStatus = hasTmuxSession ? "running" : "closed";
       const nextGoalState =
-        session.goalState === "goal_satisfied" || session.goalState === "manual_override_stopped"
+        session.goalState === "goal_satisfied" ||
+        session.goalState === "manual_override_stopped" ||
+        session.goalState === "failed_check"
           ? session.goalState
           : hasTmuxSession
             ? session.goalConfig.enabled
-              ? "running"
+              ? "idle_waiting"
               : "disabled"
             : "manual_override_stopped";
       this.repository.updateSession(session.id, {
@@ -217,22 +231,43 @@ export class SessionManager extends EventEmitter {
     return result.stdout;
   }
 
-  private refreshRuntimeFromTmux(session: ManagedSessionRecord): void {
+  private refreshRuntimeFromTmux(
+    session: ManagedSessionRecord,
+  ): { session: ManagedSessionRecord; changed: boolean } {
     const captured = this.captureTmuxPane(session.tmuxSessionName);
     if (!captured) {
-      return;
+      return { session, changed: false };
     }
     const runtime = this.getRuntime(session.id);
+    const previousBuffer = runtime.buffer;
     runtime.buffer = mergeRuntimeBuffer(runtime.buffer, captured);
     runtime.choiceOverlay = detectChoiceOverlay(runtime.buffer);
     this.persistRuntime(session.id);
     const nextPreview = summarizeTerminalText(runtime.buffer);
-    if (nextPreview && nextPreview !== session.lastOutputPreview) {
-      this.repository.updateSession(session.id, {
-        lastOutputPreview: nextPreview,
-        updatedAt: session.updatedAt,
-      });
+    const changes: Partial<Pick<ManagedSessionRecord, "status" | "lastOutputAt" | "lastOutputPreview" | "goalState">> & {
+      updatedAt?: number;
+    } = {};
+    const bufferChanged = runtime.buffer !== previousBuffer;
+    if (bufferChanged) {
+      changes.lastOutputAt = Date.now();
+      changes.status = session.goalState === "goal_satisfied" ? "goal_satisfied" : "running";
+      if (session.goalConfig.enabled && session.goalState !== "goal_satisfied") {
+        changes.goalState = "running";
+      }
     }
+    if (nextPreview && nextPreview !== session.lastOutputPreview) {
+      changes.lastOutputPreview = nextPreview;
+      if (!bufferChanged) {
+        changes.updatedAt = session.updatedAt;
+      }
+    }
+    if (Object.keys(changes).length === 0) {
+      return { session, changed: false };
+    }
+    return {
+      session: this.repository.updateSession(session.id, changes),
+      changed: true,
+    };
   }
 
   createSession(input: CreateSessionInput): SessionSummary {
@@ -307,6 +342,18 @@ export class SessionManager extends EventEmitter {
       encoding: "utf8",
     });
     return result.status === 0;
+  }
+
+  syncSessionFromTmux(sessionId: string, emitUpdate = false): SessionSummary | null {
+    const session = this.repository.getSession(sessionId);
+    if (!session || !this.hasTmuxSession(session.tmuxSessionName)) {
+      return session ? this.toSummary(session) : null;
+    }
+    const refreshed = this.refreshRuntimeFromTmux(session);
+    if (emitUpdate && refreshed.changed) {
+      this.emitSession(sessionId);
+    }
+    return this.toSummary(refreshed.session);
   }
 
   attachToSession(
@@ -442,7 +489,7 @@ export class SessionManager extends EventEmitter {
     }
     const updated = this.repository.updateSession(sessionId, {
       goalConfig,
-      goalState: goalConfig.enabled ? "running" : "disabled",
+      goalState: goalConfig.enabled ? nextEnabledGoalState(session.goalState) : "disabled",
     });
     this.repository.logAudit("goal.updated", goalConfig, sessionId);
     this.emitSession(sessionId);
