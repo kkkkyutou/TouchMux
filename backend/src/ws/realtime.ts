@@ -174,6 +174,7 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
           rows?: number;
         };
         if (message.type === "input" && typeof message.payload === "string") {
+          runtime.sessionManager.noteInputActivity(sessionId);
           runtime.sessionManager.writeTerminal(ptyProcess, message.payload);
         }
         if (message.type === "resize" && typeof message.cols === "number" && typeof message.rows === "number") {

@@ -33,7 +33,7 @@ export class GoalGuardService {
       if (success) {
         continue;
       }
-      const idleSince = session.lastOutputAt ?? session.createdAt;
+      const idleSince = this.sessionManager.getLastActivityAt(session.id) ?? session.createdAt;
       if (Date.now() - idleSince < session.goalConfig.idleTimeoutSec * 1000) {
         continue;
       }

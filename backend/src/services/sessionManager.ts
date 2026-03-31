@@ -9,7 +9,6 @@ import type {
   CreateSessionInput,
   GoalGuardConfig,
   ManagedSessionRecord,
-  SessionRuntimeStateRecord,
   SessionSummary,
   SessionStatus,
 } from "../types/models.js";
@@ -23,6 +22,7 @@ interface RuntimeState {
   choiceOverlay: ChoiceOverlay;
   lastAutoResumeAt: number | null;
   autoResumeCount: number;
+  lastInputAt: number | null;
 }
 
 const hiddenOverlay: ChoiceOverlay = {
@@ -33,14 +33,13 @@ const hiddenOverlay: ChoiceOverlay = {
   detectedAt: 0,
 };
 
-function defaultRuntimeState(sessionId: string): SessionRuntimeStateRecord {
+function defaultRuntimeState(): RuntimeState {
   return {
-    sessionId,
     buffer: "",
     choiceOverlay: hiddenOverlay,
     lastAutoResumeAt: null,
     autoResumeCount: 0,
-    updatedAt: 0,
+    lastInputAt: null,
   };
 }
 
@@ -87,6 +86,7 @@ export class SessionManager extends EventEmitter {
         choiceOverlay: runtime.choiceOverlay,
         lastAutoResumeAt: runtime.lastAutoResumeAt,
         autoResumeCount: runtime.autoResumeCount,
+        lastInputAt: null,
       });
     }
   }
@@ -115,12 +115,14 @@ export class SessionManager extends EventEmitter {
 
   private getRuntime(sessionId: string): RuntimeState {
     if (!this.runtime.has(sessionId)) {
-      const persisted = this.repository.getRuntimeState(sessionId) ?? defaultRuntimeState(sessionId);
+      const persisted = this.repository.getRuntimeState(sessionId);
+      const fallback = defaultRuntimeState();
       this.runtime.set(sessionId, {
-        buffer: persisted.buffer,
-        choiceOverlay: persisted.choiceOverlay,
-        lastAutoResumeAt: persisted.lastAutoResumeAt,
-        autoResumeCount: persisted.autoResumeCount,
+        buffer: persisted?.buffer ?? fallback.buffer,
+        choiceOverlay: persisted?.choiceOverlay ?? fallback.choiceOverlay,
+        lastAutoResumeAt: persisted?.lastAutoResumeAt ?? fallback.lastAutoResumeAt,
+        autoResumeCount: persisted?.autoResumeCount ?? fallback.autoResumeCount,
+        lastInputAt: null,
       });
     }
     return this.runtime.get(sessionId)!;
@@ -363,6 +365,29 @@ export class SessionManager extends EventEmitter {
     this.emit("session-updated", this.toSummary(updated));
   }
 
+  noteInputActivity(sessionId: string): void {
+    const session = this.repository.getSession(sessionId);
+    if (!session) {
+      return;
+    }
+    const runtime = this.getRuntime(sessionId);
+    runtime.lastInputAt = Date.now();
+  }
+
+  getLastActivityAt(sessionId: string): number | null {
+    const session = this.repository.getSession(sessionId);
+    if (!session) {
+      return null;
+    }
+    const runtime = this.getRuntime(sessionId);
+    return Math.max(
+      session.lastOutputAt ?? 0,
+      runtime.lastInputAt ?? 0,
+      runtime.lastAutoResumeAt ?? 0,
+      session.createdAt,
+    );
+  }
+
   getRecentOutput(sessionId: string): string {
     return this.getRuntime(sessionId).buffer;
   }
@@ -467,10 +492,14 @@ export class SessionManager extends EventEmitter {
     const runtime = this.getRuntime(sessionId);
     runtime.lastAutoResumeAt = Date.now();
     runtime.autoResumeCount += 1;
+    runtime.lastInputAt = runtime.lastAutoResumeAt;
     this.persistRuntime(sessionId);
-    const prompt =
-      session.goalConfig.resumePromptTemplate ||
-      "继续执行既定目标，未完成前不要停止；完成后输出成功标记。";
+    const prompt = [
+      session.goalConfig.goalText.trim() ? `当前目标：${session.goalConfig.goalText.trim()}` : null,
+      (session.goalConfig.resumePromptTemplate || "继续执行既定目标，未完成前不要停止；完成后输出成功标记。").trim(),
+    ]
+      .filter((item): item is string => Boolean(item))
+      .join("\n\n");
     this.sendLiteral(session.tmuxSessionName, prompt, true);
     const updated = this.repository.updateSession(sessionId, {
       status: "auto_resuming",
