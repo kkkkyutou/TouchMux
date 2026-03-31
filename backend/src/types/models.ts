@@ -50,6 +50,7 @@ export interface SessionRuntimeStateRecord {
   choiceOverlay: ChoiceOverlay;
   lastAutoResumeAt: number | null;
   autoResumeCount: number;
+  goalCheckOffset: number;
   updatedAt: number;
 }
 

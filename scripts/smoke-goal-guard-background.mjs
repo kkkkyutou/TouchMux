@@ -85,11 +85,12 @@ async function main() {
       "set -euo pipefail",
       "if [[ \"${1:-}\" == \"--help\" ]]; then echo \"mock-codex\"; exit 0; fi",
       "echo \"mock-codex-ready\"",
-      "sleep 0.5",
-      "echo \"background-step\"",
-      "sleep 0.5",
+      "sleep 0.3",
       "echo \"SUCCESS\"",
-      "sleep 5",
+      "while IFS= read -r line; do",
+      "  echo \"received:$line\"",
+      "  echo \"SUCCESS\"",
+      "done",
       "",
     ].join("\n"),
     "utf8",
@@ -142,13 +143,15 @@ async function main() {
     });
     assert(typeof created.id === "string", "goal guard background smoke: 创建会话失败");
 
+    await delay(900);
+
     const started = await requestJson(origin, token, `/api/goal-guard/${created.id}`, {
       method: "PUT",
       body: JSON.stringify({
         enabled: true,
-        goalText: "先不配置完成条件",
-        successKeywords: [],
-        successCommand: null,
+        goalText: "旧 SUCCESS 不应被当成当前任务完成",
+        successKeywords: ["SUCCESS"],
+        successCommand: "exit 1",
         idleTimeoutSec: 5,
         resumePromptTemplate: "继续执行既定目标，未完成前不要停止。",
         allowManualStopAfterSuccess: true,
@@ -162,18 +165,18 @@ async function main() {
     const interim = interimSessions.items.find((item) => item.id === created.id);
     assert(interim, "goal guard background smoke: 会话未找到");
     assert(
-      interim.goalState !== "goal_satisfied",
-      "goal guard background smoke: 没有完成条件时被错误标记为目标已达成",
+      interim.goalState !== "goal_satisfied" && interim.goalState !== "failed_check",
+      `goal guard background smoke: 守卫错误消费了启动前旧输出 ${interim.goalState}`,
     );
 
     const restarted = await requestJson(origin, token, `/api/goal-guard/${created.id}`, {
       method: "PUT",
       body: JSON.stringify({
         enabled: true,
-        goalText: "等待后台输出 SUCCESS",
+        goalText: "等待后台收到守卫提示后再输出 SUCCESS",
         successKeywords: ["SUCCESS"],
         successCommand: null,
-        idleTimeoutSec: 5,
+        idleTimeoutSec: 1,
         resumePromptTemplate: "继续执行既定目标，未完成前不要停止。",
         allowManualStopAfterSuccess: true,
       }),

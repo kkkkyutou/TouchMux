@@ -56,6 +56,7 @@ function mapRuntimeRow(row: Record<string, unknown>): SessionRuntimeStateRecord 
     choiceOverlay: JSON.parse(String(row.choice_overlay_json ?? hiddenOverlayJson)) as SessionRuntimeStateRecord["choiceOverlay"],
     lastAutoResumeAt: row.last_auto_resume_at ? Number(row.last_auto_resume_at) : null,
     autoResumeCount: Number(row.auto_resume_count ?? 0),
+    goalCheckOffset: Number(row.goal_check_offset ?? 0),
     updatedAt: Number(row.updated_at),
   };
 }
@@ -172,7 +173,9 @@ export class SessionRepository {
 
   updateRuntimeState(
     sessionId: string,
-    changes: Partial<Pick<SessionRuntimeStateRecord, "buffer" | "choiceOverlay" | "lastAutoResumeAt" | "autoResumeCount" | "updatedAt">>,
+    changes: Partial<
+      Pick<SessionRuntimeStateRecord, "buffer" | "choiceOverlay" | "lastAutoResumeAt" | "autoResumeCount" | "goalCheckOffset" | "updatedAt">
+    >,
   ): SessionRuntimeStateRecord {
     const current = this.getRuntimeState(sessionId);
     const next: SessionRuntimeStateRecord = {
@@ -189,17 +192,19 @@ export class SessionRepository {
       lastAutoResumeAt:
         changes.lastAutoResumeAt !== undefined ? changes.lastAutoResumeAt : (current?.lastAutoResumeAt ?? null),
       autoResumeCount: changes.autoResumeCount ?? current?.autoResumeCount ?? 0,
+      goalCheckOffset: changes.goalCheckOffset ?? current?.goalCheckOffset ?? 0,
       updatedAt: changes.updatedAt ?? Date.now(),
     };
     const statement = db.prepare(`
       INSERT INTO session_runtime_state (
-        session_id, buffer, choice_overlay_json, last_auto_resume_at, auto_resume_count, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        session_id, buffer, choice_overlay_json, last_auto_resume_at, auto_resume_count, goal_check_offset, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         buffer = excluded.buffer,
         choice_overlay_json = excluded.choice_overlay_json,
         last_auto_resume_at = excluded.last_auto_resume_at,
         auto_resume_count = excluded.auto_resume_count,
+        goal_check_offset = excluded.goal_check_offset,
         updated_at = excluded.updated_at
     `);
     statement.run(
@@ -208,6 +213,7 @@ export class SessionRepository {
       JSON.stringify(next.choiceOverlay),
       next.lastAutoResumeAt,
       next.autoResumeCount,
+      next.goalCheckOffset,
       next.updatedAt,
     );
     return next;

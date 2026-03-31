@@ -24,6 +24,7 @@ interface RuntimeState {
   lastAutoResumeAt: number | null;
   autoResumeCount: number;
   lastInputAt: number | null;
+  goalCheckOffset: number;
 }
 
 const hiddenOverlay: ChoiceOverlay = {
@@ -41,6 +42,7 @@ function defaultRuntimeState(): RuntimeState {
     lastAutoResumeAt: null,
     autoResumeCount: 0,
     lastInputAt: null,
+    goalCheckOffset: 0,
   };
 }
 
@@ -99,6 +101,7 @@ export class SessionManager extends EventEmitter {
         lastAutoResumeAt: runtime.lastAutoResumeAt,
         autoResumeCount: runtime.autoResumeCount,
         lastInputAt: null,
+        goalCheckOffset: runtime.goalCheckOffset,
       });
     }
   }
@@ -137,6 +140,7 @@ export class SessionManager extends EventEmitter {
         lastAutoResumeAt: persisted?.lastAutoResumeAt ?? fallback.lastAutoResumeAt,
         autoResumeCount: persisted?.autoResumeCount ?? fallback.autoResumeCount,
         lastInputAt: null,
+        goalCheckOffset: persisted?.goalCheckOffset ?? fallback.goalCheckOffset,
       });
     }
     return this.runtime.get(sessionId)!;
@@ -149,6 +153,7 @@ export class SessionManager extends EventEmitter {
       choiceOverlay: runtime.choiceOverlay,
       lastAutoResumeAt: runtime.lastAutoResumeAt,
       autoResumeCount: runtime.autoResumeCount,
+      goalCheckOffset: runtime.goalCheckOffset,
     });
   }
 
@@ -439,6 +444,11 @@ export class SessionManager extends EventEmitter {
     return this.getRuntime(sessionId).buffer;
   }
 
+  private getGoalWindowOutput(sessionId: string): string {
+    const runtime = this.getRuntime(sessionId);
+    return runtime.buffer.slice(Math.max(0, runtime.goalCheckOffset));
+  }
+
   resizeTerminal(ptyProcess: IPty, cols: number, rows: number): void {
     ptyProcess.resize(cols, rows);
   }
@@ -487,9 +497,17 @@ export class SessionManager extends EventEmitter {
     if (!session) {
       throw new Error("会话不存在");
     }
+    let currentSession = session;
+    if (this.hasTmuxSession(session.tmuxSessionName)) {
+      const refreshed = this.refreshRuntimeFromTmux(session);
+      currentSession = refreshed.session;
+    }
+    const runtime = this.getRuntime(sessionId);
+    runtime.goalCheckOffset = goalConfig.enabled ? runtime.buffer.length : 0;
+    this.persistRuntime(sessionId);
     const updated = this.repository.updateSession(sessionId, {
       goalConfig,
-      goalState: goalConfig.enabled ? nextEnabledGoalState(session.goalState) : "disabled",
+      goalState: goalConfig.enabled ? nextEnabledGoalState(currentSession.goalState) : "disabled",
     });
     this.repository.logAudit("goal.updated", goalConfig, sessionId);
     this.emitSession(sessionId);
@@ -501,7 +519,7 @@ export class SessionManager extends EventEmitter {
     if (!session || !session.goalConfig.enabled) {
       return false;
     }
-    const buffer = this.getRecentOutput(sessionId);
+    const buffer = this.getGoalWindowOutput(sessionId);
     const hasKeywordRule = session.goalConfig.successKeywords.length > 0;
     const hasCommandRule = Boolean(session.goalConfig.successCommand?.trim());
     if (!hasKeywordRule && !hasCommandRule) {

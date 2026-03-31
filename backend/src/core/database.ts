@@ -61,6 +61,7 @@ db.exec(`
     choice_overlay_json TEXT NOT NULL,
     last_auto_resume_at INTEGER,
     auto_resume_count INTEGER NOT NULL DEFAULT 0,
+    goal_check_offset INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
   );
 `);
@@ -75,4 +76,10 @@ ensureColumn(
   "session_runtime_state",
   "auto_resume_count",
   "ALTER TABLE session_runtime_state ADD COLUMN auto_resume_count INTEGER NOT NULL DEFAULT 0;",
+);
+
+ensureColumn(
+  "session_runtime_state",
+  "goal_check_offset",
+  "ALTER TABLE session_runtime_state ADD COLUMN goal_check_offset INTEGER NOT NULL DEFAULT 0;",
 );
