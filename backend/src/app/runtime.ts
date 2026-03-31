@@ -113,7 +113,7 @@ export function buildLocalCapabilities() {
     securityWarnings: config.securityWarnings,
     features: {
       goalGuard: true,
-      choiceOverlay: true,
+      choiceOverlay: false,
       codexHistoryImport: true,
       fileExplorer: true,
       fileUpload: true,

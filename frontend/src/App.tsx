@@ -327,22 +327,6 @@ export default function App() {
                     onError={handleTerminalError}
                   />
                 </Suspense>
-                {currentSession.choiceOverlay.visible ? (
-                  <div className="choice-overlay">
-                    <div className="overlay-title">检测到可点击选择项</div>
-                    <div className="overlay-actions">
-                      {currentSession.choiceOverlay.options.map((option) => (
-                        <button
-                          key={option.id}
-                          type="button"
-                          onClick={() => senderRef.current?.(option.send)}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
               </div>
 
               <div className="mobile-quickbar">
@@ -395,6 +379,15 @@ export default function App() {
           </button>
         </div>
         <div className="session-drawer-scroll">
+          <Suspense fallback={<section className="panel goal-panel loading-panel">Goal Guard 组件加载中...</section>}>
+            <GoalGuardEditor
+              token={token}
+              session={currentSession}
+              onUpdated={(session) => {
+                setSessions((current) => upsertSession(current, session));
+              }}
+            />
+          </Suspense>
           <SessionSidebar
             token={token}
             nodes={nodes}
@@ -447,18 +440,9 @@ export default function App() {
                 });
               } catch (error) {
                 handleAppError(error, "强制停止会话失败");
-              }
-            }}
-          />
-          <Suspense fallback={<section className="panel goal-panel loading-panel">Goal Guard 组件加载中...</section>}>
-            <GoalGuardEditor
-              token={token}
-              session={currentSession}
-              onUpdated={(session) => {
-                setSessions((current) => upsertSession(current, session));
+                }
               }}
             />
-          </Suspense>
         </div>
       </aside>
     </main>

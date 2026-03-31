@@ -1,5 +1,4 @@
-import crypto from "node:crypto";
-import type { ChoiceOption, ChoiceOverlay } from "../types/models.js";
+import type { ChoiceOverlay } from "../types/models.js";
 
 const hiddenOverlay: ChoiceOverlay = {
   visible: false,
@@ -9,20 +8,12 @@ const hiddenOverlay: ChoiceOverlay = {
   detectedAt: 0,
 };
 
-function buildOverlay(source: string, excerpt: string, options: ChoiceOption[]): ChoiceOverlay {
-  if (options.length === 0) {
-    return hiddenOverlay;
-  }
-  return {
-    visible: true,
-    source,
-    options,
-    excerpt,
-    detectedAt: Date.now(),
-  };
-}
-
 export function detectChoiceOverlay(buffer: string): ChoiceOverlay {
+  // 暂时关闭选择项识别。当前启发式规则误报较多，先避免打断正常对话流。
+  void buffer;
+  return hiddenOverlay;
+
+  /*
   const excerpt = buffer
     .slice(-4000)
     .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
@@ -66,4 +57,5 @@ export function detectChoiceOverlay(buffer: string): ChoiceOverlay {
   }
 
   return hiddenOverlay;
+  */
 }
