@@ -173,11 +173,11 @@ async function main() {
       method: "PUT",
       body: JSON.stringify({
         enabled: true,
-        goalText: "等待后台收到守卫提示后再输出 SUCCESS",
+        goalText: "等待后台收到守卫提示后\n再输出 SUCCESS",
         successKeywords: ["SUCCESS"],
         successCommand: null,
         idleTimeoutSec: 1,
-        resumePromptTemplate: "继续执行既定目标，未完成前不要停止。",
+        resumePromptTemplate: "继续执行既定目标，\n未完成前不要停止。",
         allowManualStopAfterSuccess: true,
       }),
     });
@@ -188,6 +188,11 @@ async function main() {
     assert(
       typeof finished.lastOutputPreview === "string" && finished.lastOutputPreview.includes("SUCCESS"),
       "goal guard background smoke: 后台输出预览未更新到 SUCCESS",
+    );
+    assert(
+      finished.lastOutputPreview.includes("received:当前目标：等待后台收到守卫提示后 再输出 SUCCESS；继续执行既定目标") &&
+        finished.lastOutputPreview.includes("未完成前不要"),
+      `goal guard background smoke: 自动续跑提示没有以单行方式提交: ${finished.lastOutputPreview}`,
     );
 
     const closed = await requestJson(origin, token, `/api/session/${created.id}/close`, {

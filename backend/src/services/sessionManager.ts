@@ -73,6 +73,10 @@ function mergeRuntimeBuffer(existing: string, captured: string): string {
   return `${existing}\n${captured}`.slice(-30000);
 }
 
+function flattenPromptLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function nextEnabledGoalState(current: GoalState): GoalState {
   switch (current) {
     case "goal_satisfied":
@@ -565,11 +569,13 @@ export class SessionManager extends EventEmitter {
     runtime.lastInputAt = runtime.lastAutoResumeAt;
     this.persistRuntime(sessionId);
     const prompt = [
-      session.goalConfig.goalText.trim() ? `当前目标：${session.goalConfig.goalText.trim()}` : null,
-      (session.goalConfig.resumePromptTemplate || "继续执行既定目标，未完成前不要停止；完成后输出成功标记。").trim(),
+      flattenPromptLine(session.goalConfig.goalText)
+        ? `当前目标：${flattenPromptLine(session.goalConfig.goalText)}`
+        : null,
+      flattenPromptLine(session.goalConfig.resumePromptTemplate || "继续执行既定目标，未完成前不要停止；完成后输出成功标记。"),
     ]
       .filter((item): item is string => Boolean(item))
-      .join("\n\n");
+      .join("；");
     this.sendLiteral(session.tmuxSessionName, prompt, true);
     const updated = this.repository.updateSession(sessionId, {
       status: "auto_resuming",
