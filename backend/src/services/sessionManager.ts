@@ -27,6 +27,9 @@ interface RuntimeState {
   goalCheckOffset: number;
 }
 
+const submitDelayArray = new Int32Array(new SharedArrayBuffer(4));
+const tmuxLiteralSubmitDelayMs = 300;
+
 const hiddenOverlay: ChoiceOverlay = {
   visible: false,
   source: "",
@@ -75,6 +78,13 @@ function mergeRuntimeBuffer(existing: string, captured: string): string {
 
 function flattenPromptLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function sleepSync(ms: number): void {
+  if (ms <= 0) {
+    return;
+  }
+  Atomics.wait(submitDelayArray, 0, 0, ms);
 }
 
 function nextEnabledGoalState(current: GoalState): GoalState {
@@ -225,6 +235,9 @@ export class SessionManager extends EventEmitter {
   private sendLiteral(sessionName: string, text: string, appendEnter = false): void {
     this.runTmux(["send-keys", "-t", sessionName, "-l", text]);
     if (appendEnter) {
+      // Codex TUI may keep freshly pasted text inside the composer if Enter lands
+      // in the same instant. A short delay makes the submit reliable.
+      sleepSync(tmuxLiteralSubmitDelayMs);
       this.runTmux(["send-keys", "-t", sessionName, "Enter"]);
     }
   }
