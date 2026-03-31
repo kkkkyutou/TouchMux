@@ -220,6 +220,11 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
               }
             />
           </label>
+          {form.successKeywords.length === 0 && !(form.successCommand ?? "").trim() ? (
+            <div className="session-meta">
+              当前没有配置完成判定规则。守卫可以继续自动续跑，但不会自动显示“目标已达成”。
+            </div>
+          ) : null}
           <div className="goal-guard-actions">
             <button type="button" disabled={saving} onClick={() => submitGoalGuard(null, "Goal Guard 配置已保存。")}>
               {saving ? "处理中..." : "保存配置"}

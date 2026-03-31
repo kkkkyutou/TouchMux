@@ -502,13 +502,18 @@ export class SessionManager extends EventEmitter {
       return false;
     }
     const buffer = this.getRecentOutput(sessionId);
-    const hasKeyword =
-      session.goalConfig.successKeywords.length === 0 ||
-      session.goalConfig.successKeywords.some((keyword) => buffer.includes(keyword));
-    if (!hasKeyword) {
+    const hasKeywordRule = session.goalConfig.successKeywords.length > 0;
+    const hasCommandRule = Boolean(session.goalConfig.successCommand?.trim());
+    if (!hasKeywordRule && !hasCommandRule) {
       return false;
     }
-    if (!session.goalConfig.successCommand) {
+    const keywordMatched =
+      !hasKeywordRule ||
+      session.goalConfig.successKeywords.some((keyword) => buffer.includes(keyword));
+    if (!keywordMatched) {
+      return false;
+    }
+    if (!hasCommandRule) {
       this.repository.updateSession(sessionId, {
         status: "goal_satisfied",
         goalState: "goal_satisfied",
@@ -516,7 +521,7 @@ export class SessionManager extends EventEmitter {
       this.emitSession(sessionId);
       return true;
     }
-    const result = spawnSync(config.shell, ["-lc", session.goalConfig.successCommand], {
+    const result = spawnSync(config.shell, ["-lc", session.goalConfig.successCommand!], {
       cwd: this.resolveSessionCwd(session),
       stdio: "pipe",
       encoding: "utf8",

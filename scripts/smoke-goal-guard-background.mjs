@@ -146,6 +146,30 @@ async function main() {
       method: "PUT",
       body: JSON.stringify({
         enabled: true,
+        goalText: "先不配置完成条件",
+        successKeywords: [],
+        successCommand: null,
+        idleTimeoutSec: 5,
+        resumePromptTemplate: "继续执行既定目标，未完成前不要停止。",
+        allowManualStopAfterSuccess: true,
+      }),
+    });
+
+    assert(started.goalState === "idle_waiting", `goal guard background smoke: 启动后状态异常 ${started.goalState}`);
+
+    await delay(1400);
+    const interimSessions = await requestJson(origin, token, "/api/session/list");
+    const interim = interimSessions.items.find((item) => item.id === created.id);
+    assert(interim, "goal guard background smoke: 会话未找到");
+    assert(
+      interim.goalState !== "goal_satisfied",
+      "goal guard background smoke: 没有完成条件时被错误标记为目标已达成",
+    );
+
+    const restarted = await requestJson(origin, token, `/api/goal-guard/${created.id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: true,
         goalText: "等待后台输出 SUCCESS",
         successKeywords: ["SUCCESS"],
         successCommand: null,
@@ -155,7 +179,7 @@ async function main() {
       }),
     });
 
-    assert(started.goalState === "idle_waiting", `goal guard background smoke: 启动后状态异常 ${started.goalState}`);
+    assert(restarted.goalState === "idle_waiting", `goal guard background smoke: 重新配置后状态异常 ${restarted.goalState}`);
 
     const finished = await waitForGoalSatisfied(origin, token, created.id);
     assert(
