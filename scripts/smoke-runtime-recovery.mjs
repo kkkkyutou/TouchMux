@@ -165,8 +165,8 @@ async function main() {
       current = sessions.items.find((item) => item.id === created.id);
       assert(current?.hasTmuxSession === true, "runtime recovery smoke: 重启后 tmux 会话未恢复");
       assert(
-        current?.choiceOverlay?.visible === true,
-        `runtime recovery smoke: 重启后选择项状态未恢复: ${JSON.stringify(current)}`,
+        current?.choiceOverlay?.visible === false,
+        `runtime recovery smoke: 选择项功能关闭后仍出现 overlay: ${JSON.stringify(current)}`,
       );
       assert(
         typeof current?.lastOutputPreview === "string" && current.lastOutputPreview.includes("Beta"),
