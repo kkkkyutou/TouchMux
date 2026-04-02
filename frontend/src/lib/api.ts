@@ -1,6 +1,7 @@
 import type {
   FileEntry,
   GoalGuardConfig,
+  GoalGuardDebugInfo,
   HistoryConversationSummary,
   NodeSummary,
   SessionSummary,
@@ -105,6 +106,10 @@ export async function closeSession(
     method: "POST",
     body: JSON.stringify({ nodeId, force }),
   });
+}
+
+export async function fetchSessionDetail(token: string, sessionId: string): Promise<SessionSummary> {
+  return request<SessionSummary>(`/api/session/${sessionId}/detail`, token);
 }
 
 export async function fetchHistory(token: string, nodeId?: string): Promise<HistoryConversationSummary[]> {
@@ -223,6 +228,10 @@ export async function updateGoalGuard(
     method: "PUT",
     body: JSON.stringify({ nodeId, ...goalConfig }),
   });
+}
+
+export async function fetchGoalGuardDebug(token: string, sessionId: string): Promise<GoalGuardDebugInfo> {
+  return request<GoalGuardDebugInfo>(`/api/goal-guard/${sessionId}/debug`, token);
 }
 
 export async function overrideStop(token: string, sessionId: string, nodeId: string): Promise<SessionSummary> {

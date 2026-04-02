@@ -90,6 +90,25 @@ Useful commands:
 - `npm run smoke:single`
 - `npm run smoke:hub-node`
 
+## Goal Guard Notes
+
+Goal Guard is the part of TouchMux that keeps Codex tasks moving until a stop condition is actually satisfied.
+
+- It can lock terminal text input in the browser while the guard is enabled, which helps avoid accidental keystrokes on mobile.
+- It keeps auto-resume state and terminal status separate, so "waiting", "new output detected", and "auto-resuming" are not the same thing.
+- It now exposes an in-app debug snapshot panel, so you can inspect:
+  - whether a success keyword really matched
+  - whether a standalone `SUCCESS` line was actually detected
+  - the tail of the goal-evaluation window
+  - the sanitized goal window after guard-injected prompt text is removed
+  - the pane snapshot tail used for output-change diagnosis
+
+Practical guidance:
+
+- If a task already printed `SUCCESS` before you enable the guard, enabling Goal Guard should now recognize that existing success state immediately.
+- If you suspect a false positive or false negative, open `Goal Guard` -> `查看调试快照` and compare the raw goal window with the sanitized one.
+- For public/self-hosted use, prefer a stricter `successCommand` in addition to `SUCCESS` when the task is important.
+
 ## Hub + Node
 
 Node:

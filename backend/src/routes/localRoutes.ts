@@ -295,6 +295,15 @@ export function registerLocalRoutes({
     });
   });
 
+  app.get(`${prefix}/goal-guard/:sessionId/debug`, authMiddleware, (request, response) => {
+    const debugInfo = localRuntime.sessionManager.getGoalDebugInfo(readPathParam(request.params.sessionId));
+    if (!debugInfo) {
+      response.status(404).json({ message: "会话不存在" });
+      return;
+    }
+    response.json(debugInfo);
+  });
+
   app.put(`${prefix}/goal-guard/:sessionId`, authMiddleware, (request, response) => {
     try {
       const goalConfig: GoalGuardConfig = buildGoalGuardConfig(request.body);

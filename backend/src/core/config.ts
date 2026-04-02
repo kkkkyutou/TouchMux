@@ -132,7 +132,7 @@ export const config: AppConfig = {
   sessionsDir: path.join(sessionHome, ".codex", "sessions"),
   sessionHome,
   shell: process.env.TOUCHMUX_DEFAULT_SHELL ?? "/bin/bash",
-  goalGuardIntervalMs: Number(process.env.TOUCHMUX_GOAL_GUARD_INTERVAL_MS ?? 15000),
+  goalGuardIntervalMs: Number(process.env.TOUCHMUX_GOAL_GUARD_INTERVAL_MS ?? 5000),
   defaultIdleTimeoutSec: Number(process.env.TOUCHMUX_IDLE_TIMEOUT_SEC ?? 90),
   loginRateLimitWindowMs: Number(process.env.TOUCHMUX_LOGIN_WINDOW_MS ?? 60000),
   loginRateLimitMaxAttempts: Number(process.env.TOUCHMUX_LOGIN_MAX_ATTEMPTS ?? 6),

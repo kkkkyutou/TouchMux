@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { listDirectory } from "../lib/api";
+import { createFolder, listDirectory } from "../lib/api";
 import type { FileEntry, HistoryConversationSummary, NodeSummary, SessionMode, SessionSummary } from "../types/api";
 
 interface SessionSidebarProps {
@@ -129,6 +129,14 @@ function parsePathDraftForSuggestions(
   };
 }
 
+function trimPreview(text: string, maxLength: number): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+  return `${compact.slice(0, maxLength)}...`;
+}
+
 export function SessionSidebar({
   token,
   nodes,
@@ -153,6 +161,8 @@ export function SessionSidebar({
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [directoryLoading, setDirectoryLoading] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [sourceId, setSourceId] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -160,6 +170,10 @@ export function SessionSidebar({
   const [showCreateForm, setShowCreateForm] = useState(false);
 
   const historyOptions = useMemo(() => historyItems.slice(0, 20), [historyItems]);
+  const selectedHistoryItem = useMemo(
+    () => historyItems.find((item) => item.sessionId === sourceId) ?? null,
+    [historyItems, sourceId],
+  );
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === currentNodeId) ?? null,
     [nodes, currentNodeId],
@@ -297,6 +311,33 @@ export function SessionSidebar({
     setSubmitError(null);
     setDirectoryError(null);
     setMode("new");
+    setNewFolderName("");
+    setCreatingFolder(false);
+  }
+
+  async function handleCreateSubDirectory(): Promise<void> {
+    if (!token || !currentNodeId || !workspaceRoot) {
+      setDirectoryError("当前未选择可用节点或根目录");
+      return;
+    }
+    const nextName = newFolderName.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!nextName || nextName.includes("..")) {
+      setDirectoryError("请输入合法的子目录名");
+      return;
+    }
+    const relativePath = cwd === "." ? nextName : `${cwd}/${nextName}`;
+    try {
+      setCreatingFolder(true);
+      await createFolder(token, currentNodeId, workspaceRoot, normalizeRelativePath(relativePath));
+      const items = await listDirectory(token, currentNodeId, workspaceRoot, cwd);
+      setChildDirectories(items.filter((entry) => entry.type === "directory"));
+      setDirectoryError(null);
+      setNewFolderName("");
+    } catch (error) {
+      setDirectoryError(error instanceof Error ? error.message : "创建目录失败");
+    } finally {
+      setCreatingFolder(false);
+    }
   }
 
   return (
@@ -472,28 +513,6 @@ export function SessionSidebar({
                   打开
                 </button>
               </div>
-              {!suggestionLoading && pathSuggestions.length === 0 ? null : (
-                <div className="path-suggestion-list">
-                  {suggestionLoading ? <span className="session-meta">路径建议读取中...</span> : null}
-                  {pathSuggestions.map((entry) => (
-                    <button
-                      key={entry.path}
-                      type="button"
-                      className="ghost-button path-suggestion-button"
-                      onClick={() => {
-                        setDirectoryPath(entry.path);
-                        setPathDraft(formatDirectoryLabel(selectedRootLabel, entry.path));
-                        setDirectoryError(null);
-                      }}
-                    >
-                      {formatDirectoryLabel(selectedRootLabel, entry.path)}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="directory-picker-top">
-                <span className="session-meta">可以直接输入完整路径，例如 {formatDirectoryLabel(selectedRootLabel, "projects")}。</span>
-              </div>
               <div className="directory-actions-row">
                 <button
                   type="button"
@@ -517,6 +536,33 @@ export function SessionSidebar({
                   上一级
                 </button>
               </div>
+              <label className="directory-create-inline">
+                <span>当前目录新建子目录</span>
+                <div className="address-bar-row">
+                  <input
+                    value={newFolderName}
+                    onChange={(event) => setNewFolderName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") {
+                        return;
+                      }
+                      event.preventDefault();
+                      void handleCreateSubDirectory();
+                    }}
+                    placeholder="例如：my-task"
+                  />
+                  <button
+                    type="button"
+                    className="ghost-button compact-button"
+                    disabled={creatingFolder}
+                    onClick={() => {
+                      void handleCreateSubDirectory();
+                    }}
+                  >
+                    {creatingFolder ? "创建中..." : "新建目录"}
+                  </button>
+                </div>
+              </label>
               <label>
                 进入子目录
                 <select
@@ -538,20 +584,64 @@ export function SessionSidebar({
                   ))}
                 </select>
               </label>
+              <div className="directory-picker-top">
+                <span className="session-meta">可以直接输入完整路径，例如 {formatDirectoryLabel(selectedRootLabel, "projects")}。</span>
+              </div>
               {directoryError ? <div className="error-banner">{directoryError}</div> : null}
+              {!suggestionLoading && pathSuggestions.length === 0 ? null : (
+                <div className="path-suggestion-list">
+                  {suggestionLoading ? <span className="session-meta">路径建议读取中...</span> : null}
+                  {pathSuggestions.map((entry) => (
+                    <button
+                      key={entry.path}
+                      type="button"
+                      className="ghost-button path-suggestion-button"
+                      onClick={() => {
+                        setDirectoryPath(entry.path);
+                        setPathDraft(formatDirectoryLabel(selectedRootLabel, entry.path));
+                        setDirectoryError(null);
+                      }}
+                    >
+                      {formatDirectoryLabel(selectedRootLabel, entry.path)}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             {mode !== "new" ? (
-              <label>
-                源 Codex Session
-                <select value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
-                  <option value="">请选择</option>
-                  {historyOptions.map((item) => (
-                    <option key={item.sessionId} value={item.sessionId}>
-                      {item.sessionId.slice(0, 8)} · {new Date(item.lastUpdatedAt).toLocaleString()}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <>
+                <label>
+                  源 Codex Session
+                  <select value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
+                    <option value="">请选择</option>
+                    {historyOptions.map((item) => (
+                      <option key={item.sessionId} value={item.sessionId}>
+                        {item.sessionId.slice(0, 8)} · {trimPreview(item.firstSnippet || item.lastSnippet || "暂无内容", 18)} ·{" "}
+                        {new Date(item.lastUpdatedAt).toLocaleString()}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selectedHistoryItem ? (
+                  <section className="inline-action-card history-preview-card">
+                    <div className="inline-action-header">
+                      <div>
+                        <div className="eyebrow">会话预览</div>
+                        <h3>{selectedHistoryItem.sessionId.slice(0, 8)}</h3>
+                      </div>
+                      <span className="session-meta">{selectedHistoryItem.messageCount} 条记录</span>
+                    </div>
+                    <div className="history-preview-line">
+                      <strong>开场</strong>
+                      <span>{selectedHistoryItem.firstSnippet || "暂无文本"}</span>
+                    </div>
+                    <div className="history-preview-line">
+                      <strong>最近</strong>
+                      <span>{selectedHistoryItem.lastSnippet || "暂无文本"}</span>
+                    </div>
+                  </section>
+                ) : null}
+              </>
             ) : null}
             <label>
               初始提示

@@ -51,6 +51,8 @@ export interface SessionRuntimeStateRecord {
   lastAutoResumeAt: number | null;
   autoResumeCount: number;
   goalCheckOffset: number;
+  lastPaneSnapshot: string;
+  goalCheckPaneSnapshot: string;
   updatedAt: number;
 }
 
@@ -94,6 +96,7 @@ export interface HistoryConversationSummary {
   lastUpdatedAt: number;
   firstUpdatedAt: number;
   messageCount: number;
+  firstSnippet: string;
   lastSnippet: string;
 }
 

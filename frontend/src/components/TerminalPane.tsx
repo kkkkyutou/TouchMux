@@ -7,16 +7,23 @@ interface TerminalPaneProps {
   token: string;
   nodeId: string | null;
   sessionId: string | null;
+  copyModeEnabled: boolean;
+  inputLocked: boolean;
   onReady: (sender: ((text: string) => void) | null) => void;
+  onTmuxCopyModeReady: (
+    handler: ((action: "enter" | "page_up" | "page_down" | "line_up" | "line_down" | "exit") => void) | null,
+  ) => void;
   onError: (message: string) => void;
 }
+
+type TmuxCopyModeAction = "enter" | "page_up" | "page_down" | "line_up" | "line_down" | "exit";
 
 function resolveTerminalFontSize(): number {
   const width = window.innerWidth;
   const height = window.innerHeight;
   const isPortraitMobile = width <= 720 && height > width;
   if (isPortraitMobile) {
-    return Math.max(12, Math.min(15, Math.floor(width / 24)));
+    return Math.max(13, Math.min(16, Math.floor(width / 23)));
   }
   if (width <= 720) {
     return 14;
@@ -24,23 +31,77 @@ function resolveTerminalFontSize(): number {
   return 14;
 }
 
-export function TerminalPane({ token, nodeId, sessionId, onReady, onError }: TerminalPaneProps) {
+export function TerminalPane({
+  token,
+  nodeId,
+  sessionId,
+  copyModeEnabled,
+  inputLocked,
+  onReady,
+  onTmuxCopyModeReady,
+  onError,
+}: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const touchStateRef = useRef<{ lastY: number; carry: number } | null>(null);
+  const wheelCarryRef = useRef(0);
+  const copyModeEnabledRef = useRef(copyModeEnabled);
+  const inputLockedRef = useRef(inputLocked);
+
+  useEffect(() => {
+    copyModeEnabledRef.current = copyModeEnabled;
+  }, [copyModeEnabled]);
+
+  useEffect(() => {
+    inputLockedRef.current = inputLocked;
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+      terminal.options.disableStdin = inputLocked;
+    if (inputLocked) {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement) {
+        activeElement.blur();
+      }
+    }
+  }, [inputLocked]);
 
   useEffect(() => {
     const terminal = new Terminal({
       convertEol: true,
       cursorBlink: true,
-      fontFamily: '"Iosevka Term", "JetBrains Mono", monospace',
+      disableStdin: inputLocked,
+      fontFamily:
+        '"Sarasa Mono SC", "Maple Mono NF CN", "Cascadia Mono", "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", "Menlo", "Consolas", "Noto Sans Mono CJK SC", monospace',
       fontSize: resolveTerminalFontSize(),
+      fontWeight: "400",
+      fontWeightBold: "600",
+      lineHeight: 1.22,
+      letterSpacing: 0.1,
       theme: {
         background: "#101513",
         foreground: "#f1efe6",
         cursor: "#ffb84d",
         selectionBackground: "rgba(255, 184, 77, 0.25)",
+        black: "#232a2f",
+        red: "#e67e80",
+        green: "#a7c080",
+        yellow: "#dbbc7f",
+        blue: "#7fbbb3",
+        magenta: "#d699b6",
+        cyan: "#83c092",
+        white: "#d3c6aa",
+        brightBlack: "#4f585e",
+        brightRed: "#f08f90",
+        brightGreen: "#b2ca8f",
+        brightYellow: "#e7c38a",
+        brightBlue: "#89c2bb",
+        brightMagenta: "#e0a7c4",
+        brightCyan: "#95d4a4",
+        brightWhite: "#fff9e8",
       },
       scrollback: 5000,
     });
@@ -66,26 +127,63 @@ export function TerminalPane({ token, nodeId, sessionId, onReady, onError }: Ter
         );
       }
     };
-    const resizeObserver = new ResizeObserver(() => {
+    const scheduleViewportSync = () => {
       syncTerminalViewport();
+      window.requestAnimationFrame(syncTerminalViewport);
+      window.setTimeout(syncTerminalViewport, 120);
+      window.setTimeout(syncTerminalViewport, 320);
+    };
+    const onFocusOut = () => {
+      window.setTimeout(scheduleViewportSync, 80);
+      window.setTimeout(scheduleViewportSync, 240);
+      window.setTimeout(scheduleViewportSync, 520);
+    };
+    const resizeObserver = new ResizeObserver(() => {
+      scheduleViewportSync();
     });
     if (hostRef.current) {
       resizeObserver.observe(hostRef.current);
     }
-    window.addEventListener("resize", syncTerminalViewport);
+    window.addEventListener("resize", scheduleViewportSync);
+    window.visualViewport?.addEventListener("resize", scheduleViewportSync);
+    window.visualViewport?.addEventListener("scroll", scheduleViewportSync);
+    window.addEventListener("orientationchange", scheduleViewportSync);
+    document.addEventListener("focusin", scheduleViewportSync);
+    document.addEventListener("focusout", onFocusOut);
 
     return () => {
       resizeObserver.disconnect();
-      window.removeEventListener("resize", syncTerminalViewport);
+      window.removeEventListener("resize", scheduleViewportSync);
+      window.visualViewport?.removeEventListener("resize", scheduleViewportSync);
+      window.visualViewport?.removeEventListener("scroll", scheduleViewportSync);
+      window.removeEventListener("orientationchange", scheduleViewportSync);
+      document.removeEventListener("focusin", scheduleViewportSync);
+      document.removeEventListener("focusout", onFocusOut);
       onReady(null);
+      onTmuxCopyModeReady(null);
       socketRef.current?.close();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
     };
-  }, [onReady]);
+  }, [onReady, onTmuxCopyModeReady]);
 
   useEffect(() => {
+    const sendCopyModeAction = (action: TmuxCopyModeAction, repeat = 1) => {
+      const current = socketRef.current;
+      if (current?.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      const safeRepeat = Number.isFinite(repeat) ? Math.max(1, Math.min(30, Math.floor(repeat))) : 1;
+      current.send(
+        JSON.stringify({
+          type: "tmux-copy-mode",
+          action,
+          repeat: safeRepeat,
+        }),
+      );
+    };
+
     const terminal = terminalRef.current;
     const fitAddon = fitRef.current;
     if (!terminal || !fitAddon) {
@@ -103,50 +201,179 @@ export function TerminalPane({ token, nodeId, sessionId, onReady, onError }: Ter
 
     fitAddon.fit();
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(
-      `${protocol}://${location.host}/ws/terminal?token=${encodeURIComponent(token)}&sessionId=${encodeURIComponent(
-        sessionId,
-      )}&nodeId=${encodeURIComponent(nodeId)}&cols=${terminal.cols}&rows=${terminal.rows}`,
-    );
-    socketRef.current = socket;
+    const socketUrl = `${protocol}://${location.host}/ws/terminal?token=${encodeURIComponent(
+      token,
+    )}&sessionId=${encodeURIComponent(sessionId)}&nodeId=${encodeURIComponent(nodeId)}&cols=${terminal.cols}&rows=${terminal.rows}`;
+    let disposed = false;
+    let retryCount = 0;
+    let retryTimer: number | null = null;
 
-    socket.onopen = () => {
-      onReady((text) => {
-        socket.send(
-          JSON.stringify({
-            type: "input",
-            payload: text,
-          }),
-        );
-      });
-    };
-
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data) as { type: string; payload?: string };
-      if (message.type === "data" && typeof message.payload === "string") {
-        terminal.write(message.payload);
-      }
-      if (message.type === "error" && typeof message.payload === "string") {
-        onError(message.payload);
-        terminal.writeln(`\r\n[错误] ${message.payload}`);
+    const clearRetryTimer = () => {
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
       }
     };
 
-    socket.onclose = () => {
-      onReady(null);
+    const connect = () => {
+      if (disposed) {
+        return;
+      }
+      const socket = new WebSocket(socketUrl);
+      socketRef.current = socket;
+
+      socket.onopen = () => {
+        retryCount = 0;
+        fitAddon.fit();
+        window.requestAnimationFrame(() => fitAddon.fit());
+        window.setTimeout(() => fitAddon.fit(), 140);
+        onReady((text) => {
+          const current = socketRef.current;
+          if (current?.readyState !== WebSocket.OPEN) {
+            return;
+          }
+          current.send(
+            JSON.stringify({
+              type: "input",
+              payload: text,
+            }),
+          );
+        });
+        onTmuxCopyModeReady((action) => {
+          sendCopyModeAction(action, 1);
+        });
+        if (copyModeEnabledRef.current) {
+          sendCopyModeAction("enter", 1);
+        }
+      };
+
+      socket.onmessage = (event) => {
+        const message = JSON.parse(event.data) as { type: string; payload?: string };
+        if (message.type === "data" && typeof message.payload === "string") {
+          terminal.write(message.payload);
+        }
+        if (message.type === "error" && typeof message.payload === "string") {
+          onError(message.payload);
+          terminal.writeln(`\r\n[错误] ${message.payload}`);
+        }
+      };
+
+      socket.onclose = () => {
+        if (disposed) {
+          return;
+        }
+        onReady(null);
+        onTmuxCopyModeReady(null);
+        retryCount += 1;
+        const retryDelayMs = Math.min(1000 * 2 ** Math.min(retryCount - 1, 3), 8000);
+        retryTimer = window.setTimeout(connect, retryDelayMs);
+      };
     };
+
+    connect();
 
     const disposable = terminal.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "input", payload: data }));
+      if (inputLockedRef.current) {
+        return;
+      }
+      const current = socketRef.current;
+      if (current?.readyState === WebSocket.OPEN) {
+        current.send(JSON.stringify({ type: "input", payload: data }));
       }
     });
 
     return () => {
+      disposed = true;
+      clearRetryTimer();
       disposable.dispose();
-      socket.close();
+      onTmuxCopyModeReady(null);
+      socketRef.current?.close();
     };
-  }, [sessionId, nodeId, token, onReady, onError]);
+  }, [sessionId, nodeId, token, onReady, onTmuxCopyModeReady, onError]);
 
-  return <div ref={hostRef} className="terminal-host" />;
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) {
+      return;
+    }
+    const pixelsPerLine = 22;
+    const sendScrollLines = (action: "line_up" | "line_down", lineCount: number) => {
+      const current = socketRef.current;
+      if (current?.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      const safeCount = Math.max(1, Math.min(30, Math.floor(lineCount)));
+      current.send(
+        JSON.stringify({
+          type: "tmux-copy-mode",
+          action,
+          repeat: safeCount,
+        }),
+      );
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      if (!copyModeEnabled || event.touches.length === 0) {
+        touchStateRef.current = null;
+        return;
+      }
+      const touch = event.touches[0];
+      touchStateRef.current = { lastY: touch.clientY, carry: 0 };
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (!copyModeEnabled || event.touches.length === 0 || !touchStateRef.current) {
+        return;
+      }
+      event.preventDefault();
+      const touch = event.touches[0];
+      const deltaY = touch.clientY - touchStateRef.current.lastY;
+      touchStateRef.current.lastY = touch.clientY;
+      touchStateRef.current.carry += deltaY;
+      if (Math.abs(touchStateRef.current.carry) < pixelsPerLine) {
+        return;
+      }
+      const direction = touchStateRef.current.carry > 0 ? "line_up" : "line_down";
+      const lines = Math.floor(Math.abs(touchStateRef.current.carry) / pixelsPerLine);
+      touchStateRef.current.carry =
+        direction === "line_up"
+          ? touchStateRef.current.carry - lines * pixelsPerLine
+          : touchStateRef.current.carry + lines * pixelsPerLine;
+      sendScrollLines(direction, lines);
+    };
+    const onTouchEnd = () => {
+      touchStateRef.current = null;
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (!copyModeEnabled) {
+        wheelCarryRef.current = 0;
+        return;
+      }
+      event.preventDefault();
+      wheelCarryRef.current += event.deltaY;
+      if (Math.abs(wheelCarryRef.current) < pixelsPerLine) {
+        return;
+      }
+      const direction = wheelCarryRef.current > 0 ? "line_down" : "line_up";
+      const lines = Math.floor(Math.abs(wheelCarryRef.current) / pixelsPerLine);
+      wheelCarryRef.current =
+        direction === "line_down"
+          ? wheelCarryRef.current - lines * pixelsPerLine
+          : wheelCarryRef.current + lines * pixelsPerLine;
+      sendScrollLines(direction, lines);
+    };
+
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd, { passive: true });
+    host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    host.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchEnd);
+      host.removeEventListener("wheel", onWheel);
+    };
+  }, [copyModeEnabled]);
+
+  return <div ref={hostRef} className={`terminal-host ${copyModeEnabled ? "copy-mode-active" : ""}`} />;
 }

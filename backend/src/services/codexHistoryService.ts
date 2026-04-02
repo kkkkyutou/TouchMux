@@ -31,6 +31,7 @@ export class CodexHistoryService {
             firstUpdatedAt: parsed.ts * 1000,
             lastUpdatedAt: parsed.ts * 1000,
             messageCount: 1,
+            firstSnippet: snippet,
             lastSnippet: snippet,
           });
           continue;

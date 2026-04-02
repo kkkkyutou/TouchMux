@@ -57,6 +57,8 @@ function mapRuntimeRow(row: Record<string, unknown>): SessionRuntimeStateRecord 
     lastAutoResumeAt: row.last_auto_resume_at ? Number(row.last_auto_resume_at) : null,
     autoResumeCount: Number(row.auto_resume_count ?? 0),
     goalCheckOffset: Number(row.goal_check_offset ?? 0),
+    lastPaneSnapshot: String(row.last_pane_snapshot ?? ""),
+    goalCheckPaneSnapshot: String(row.goal_check_pane_snapshot ?? ""),
     updatedAt: Number(row.updated_at),
   };
 }
@@ -174,7 +176,17 @@ export class SessionRepository {
   updateRuntimeState(
     sessionId: string,
     changes: Partial<
-      Pick<SessionRuntimeStateRecord, "buffer" | "choiceOverlay" | "lastAutoResumeAt" | "autoResumeCount" | "goalCheckOffset" | "updatedAt">
+      Pick<
+        SessionRuntimeStateRecord,
+        | "buffer"
+        | "choiceOverlay"
+        | "lastAutoResumeAt"
+        | "autoResumeCount"
+        | "goalCheckOffset"
+        | "lastPaneSnapshot"
+        | "goalCheckPaneSnapshot"
+        | "updatedAt"
+      >
     >,
   ): SessionRuntimeStateRecord {
     const current = this.getRuntimeState(sessionId);
@@ -193,18 +205,23 @@ export class SessionRepository {
         changes.lastAutoResumeAt !== undefined ? changes.lastAutoResumeAt : (current?.lastAutoResumeAt ?? null),
       autoResumeCount: changes.autoResumeCount ?? current?.autoResumeCount ?? 0,
       goalCheckOffset: changes.goalCheckOffset ?? current?.goalCheckOffset ?? 0,
+      lastPaneSnapshot: changes.lastPaneSnapshot ?? current?.lastPaneSnapshot ?? "",
+      goalCheckPaneSnapshot: changes.goalCheckPaneSnapshot ?? current?.goalCheckPaneSnapshot ?? "",
       updatedAt: changes.updatedAt ?? Date.now(),
     };
     const statement = db.prepare(`
       INSERT INTO session_runtime_state (
-        session_id, buffer, choice_overlay_json, last_auto_resume_at, auto_resume_count, goal_check_offset, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        session_id, buffer, choice_overlay_json, last_auto_resume_at, auto_resume_count, goal_check_offset,
+        last_pane_snapshot, goal_check_pane_snapshot, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         buffer = excluded.buffer,
         choice_overlay_json = excluded.choice_overlay_json,
         last_auto_resume_at = excluded.last_auto_resume_at,
         auto_resume_count = excluded.auto_resume_count,
         goal_check_offset = excluded.goal_check_offset,
+        last_pane_snapshot = excluded.last_pane_snapshot,
+        goal_check_pane_snapshot = excluded.goal_check_pane_snapshot,
         updated_at = excluded.updated_at
     `);
     statement.run(
@@ -214,6 +231,8 @@ export class SessionRepository {
       next.lastAutoResumeAt,
       next.autoResumeCount,
       next.goalCheckOffset,
+      next.lastPaneSnapshot,
+      next.goalCheckPaneSnapshot,
       next.updatedAt,
     );
     return next;

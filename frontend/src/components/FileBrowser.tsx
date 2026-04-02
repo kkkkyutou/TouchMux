@@ -74,6 +74,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [preview, setPreview] = useState("");
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [previewSheetOpen, setPreviewSheetOpen] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -127,6 +128,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
   useEffect(() => {
     setSelectedFilePath(null);
     setPreview("");
+    setPreviewSheetOpen(false);
     setIsDirty(false);
     setConfirmState(null);
     pendingConfirmActionRef.current = null;
@@ -191,6 +193,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
     const content = await readFile(token, nodeId, rootPath, filePath);
     setSelectedFilePath(filePath);
     setPreview(content);
+    setPreviewSheetOpen(true);
     setIsDirty(false);
     setError(null);
   }
@@ -345,6 +348,12 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
           setIsExpanded(false);
         }}
       />
+      <div
+        className={`file-preview-backdrop ${previewSheetOpen ? "open" : ""}`}
+        onClick={() => {
+          setPreviewSheetOpen(false);
+        }}
+      />
       <section className={`panel file-browser browser-dock ${isExpanded ? "expanded" : "collapsed"}`}>
         <button
           type="button"
@@ -419,27 +428,29 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
                   }
                 }}
               />
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => {
-                  navigateToDirectory(pathInput || ".");
-                }}
-              >
-                打开
-              </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => {
-                  navigateToDirectory(parentPath(relativePath));
-                }}
-              >
-                上一级
-              </button>
-              <button type="button" className="ghost-button" onClick={() => void refresh()}>
-                刷新
-              </button>
+              <div className="file-toolbar-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    navigateToDirectory(pathInput || ".");
+                  }}
+                >
+                  打开
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    navigateToDirectory(parentPath(relativePath));
+                  }}
+                >
+                  上一级
+                </button>
+                <button type="button" className="ghost-button" onClick={() => void refresh()}>
+                  刷新
+                </button>
+              </div>
             </div>
             <div className="file-breadcrumbs">
               {breadcrumbs.map((item) => (
@@ -634,6 +645,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
                                 if (selectedFilePath === entry.path) {
                                   setSelectedFilePath(null);
                                   setPreview("");
+                                  setPreviewSheetOpen(false);
                                   setIsDirty(false);
                                 }
                                 return refresh();
@@ -651,43 +663,62 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
                 </article>
               ))}
             </div>
-            <div className="editor-header">
-              <div>
-                <div className="eyebrow">编辑器</div>
-                <strong>{selectedFilePath ?? "未选择文件"}</strong>
-                {isDirty ? <div className="session-meta">有未保存修改</div> : null}
-              </div>
-              <div className="file-entry-actions">
-                <button
-                  type="button"
-                  className="ghost-button"
-                  disabled={!selectedFilePath}
-                  onClick={() => {
-                    if (!selectedFilePath) {
-                      return;
-                    }
-                    void handleDownload(selectedFilePath);
-                  }}
-                >
-                  下载当前文件
-                </button>
-                <button type="button" onClick={() => void handleSave()} disabled={!canSave}>
-                  {isSaving ? "保存中..." : "保存"}
-                </button>
-              </div>
-            </div>
-            <textarea
-              className="file-preview"
-              value={preview}
-              onChange={(event) => {
-                setPreview(event.target.value);
-                setIsDirty(true);
-              }}
-              placeholder="点击文件后可直接编辑并保存文本内容"
-              spellCheck={false}
-            />
           </>
         )}
+      </section>
+      <section
+        className={`file-preview-sheet ${previewSheetOpen ? "open" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="文件内容预览"
+        onClick={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        <div className="editor-header">
+          <div>
+            <div className="eyebrow">编辑器</div>
+            <strong>{selectedFilePath ?? "未选择文件"}</strong>
+            {isDirty ? <div className="session-meta">有未保存修改</div> : null}
+          </div>
+          <div className="file-entry-actions">
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={!selectedFilePath}
+              onClick={() => {
+                if (!selectedFilePath) {
+                  return;
+                }
+                void handleDownload(selectedFilePath);
+              }}
+            >
+              下载当前文件
+            </button>
+            <button type="button" onClick={() => void handleSave()} disabled={!canSave}>
+              {isSaving ? "保存中..." : "保存"}
+            </button>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => {
+                setPreviewSheetOpen(false);
+              }}
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+        <textarea
+          className="file-preview file-preview-sheet-editor"
+          value={preview}
+          onChange={(event) => {
+            setPreview(event.target.value);
+            setIsDirty(true);
+          }}
+          placeholder="点击文件后可直接编辑并保存文本内容"
+          spellCheck={false}
+        />
       </section>
     </>
   );

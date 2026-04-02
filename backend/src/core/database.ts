@@ -6,6 +6,12 @@ const databasePath = path.join(config.dataDir, "touchmux.sqlite");
 
 export const db = new DatabaseSync(databasePath);
 
+db.exec(`
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA busy_timeout = 5000;
+`);
+
 function ensureColumn(tableName: string, columnName: string, statement: string): void {
   const columns = db
     .prepare(`PRAGMA table_info(${tableName})`)
@@ -62,6 +68,8 @@ db.exec(`
     last_auto_resume_at INTEGER,
     auto_resume_count INTEGER NOT NULL DEFAULT 0,
     goal_check_offset INTEGER NOT NULL DEFAULT 0,
+    last_pane_snapshot TEXT NOT NULL DEFAULT '',
+    goal_check_pane_snapshot TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
   );
 `);
@@ -82,4 +90,16 @@ ensureColumn(
   "session_runtime_state",
   "goal_check_offset",
   "ALTER TABLE session_runtime_state ADD COLUMN goal_check_offset INTEGER NOT NULL DEFAULT 0;",
+);
+
+ensureColumn(
+  "session_runtime_state",
+  "last_pane_snapshot",
+  "ALTER TABLE session_runtime_state ADD COLUMN last_pane_snapshot TEXT NOT NULL DEFAULT '';",
+);
+
+ensureColumn(
+  "session_runtime_state",
+  "goal_check_pane_snapshot",
+  "ALTER TABLE session_runtime_state ADD COLUMN goal_check_pane_snapshot TEXT NOT NULL DEFAULT '';",
 );

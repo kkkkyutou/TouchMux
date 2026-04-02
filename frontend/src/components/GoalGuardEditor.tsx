@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { updateGoalGuard } from "../lib/api";
-import type { GoalGuardConfig, SessionSummary } from "../types/api";
+import { fetchGoalGuardDebug, fetchSessionDetail, updateGoalGuard } from "../lib/api";
+import type { GoalGuardConfig, GoalGuardDebugInfo, SessionSummary } from "../types/api";
 
 interface GoalGuardEditorProps {
   token: string;
@@ -15,7 +15,7 @@ function goalStateLabel(goalState: SessionSummary["goalState"]): string {
     case "idle_waiting":
       return "等待守卫中";
     case "running":
-      return "检测到输出";
+      return "检测到新输出";
     case "auto_resuming":
       return "自动续跑中";
     case "goal_satisfied":
@@ -36,7 +36,7 @@ function goalStateHint(goalState: SessionSummary["goalState"]): string {
     case "idle_waiting":
       return "守卫已启动，但还在等待空闲阈值或新的终端输出。";
     case "running":
-      return "后台已经从 tmux 捕获到新的终端输出，说明会话正在推进。";
+      return "守卫启用后已检测到新的终端输出，但只有满足首检或空闲阈值后才会自动续跑。";
     case "auto_resuming":
       return "守卫刚刚向终端发送了续跑提示，等待 Codex 继续执行。";
     case "goal_satisfied":
@@ -53,18 +53,22 @@ function goalStateHint(goalState: SessionSummary["goalState"]): string {
 export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorProps) {
   const [form, setForm] = useState<GoalGuardConfig | null>(null);
   const [saving, setSaving] = useState(false);
+  const [debugLoading, setDebugLoading] = useState(false);
   const [expanded, setExpanded] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [debugInfo, setDebugInfo] = useState<GoalGuardDebugInfo | null>(null);
   const sessionId = session?.id ?? null;
   const goalConfigFingerprint = session ? JSON.stringify(session.goalConfig) : null;
+  const effectiveGoalState = debugInfo?.sessionId === sessionId ? debugInfo.goalState : session?.goalState ?? "disabled";
 
   useEffect(() => {
     setForm(session?.goalConfig ?? null);
     setDirty(false);
     setError(null);
     setSavedNotice(null);
+    setDebugInfo(null);
     setExpanded(true);
   }, [sessionId]);
 
@@ -103,6 +107,32 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
       .finally(() => setSaving(false));
   }
 
+  function formatTimestamp(timestamp: number | null): string {
+    if (!timestamp) {
+      return "无";
+    }
+    return new Date(timestamp).toLocaleString("zh-CN", {
+      hour12: false,
+    });
+  }
+
+  function loadDebugInfo(): void {
+    if (!session) {
+      return;
+    }
+    setDebugLoading(true);
+    setError(null);
+    void Promise.all([fetchGoalGuardDebug(token, session.id), fetchSessionDetail(token, session.id)])
+      .then(([nextDebugInfo, nextSession]) => {
+        setDebugInfo(nextDebugInfo);
+        onUpdated(nextSession);
+      })
+      .catch((loadError) => {
+        setError(loadError instanceof Error ? loadError.message : "读取守卫调试信息失败");
+      })
+      .finally(() => setDebugLoading(false));
+  }
+
   if (!session || !form) {
     return (
       <section className="panel goal-panel goal-panel-empty">
@@ -124,7 +154,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
           <div className="eyebrow">Goal Guard</div>
           <h2>目标守卫</h2>
           <div className="session-meta">
-            当前状态：{goalStateLabel(session.goalState)} · {session.goalConfig.enabled ? "守卫已启动" : "仅保存配置"}
+            当前状态：{goalStateLabel(effectiveGoalState)} · {session.goalConfig.enabled ? "守卫已启动" : "仅保存配置"}
           </div>
         </div>
         <button type="button" className="ghost-button" onClick={() => setExpanded((current) => !current)}>
@@ -134,8 +164,8 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
       {!expanded ? null : (
         <div className="goal-panel-body">
           <div className="goal-guard-state-card">
-            <strong>{goalStateLabel(session.goalState)}</strong>
-            <span>{goalStateHint(session.goalState)}</span>
+            <strong>{goalStateLabel(effectiveGoalState)}</strong>
+            <span>{goalStateHint(effectiveGoalState)}</span>
           </div>
           <div className="session-meta">
             保存配置不会自动启动守卫。只有点击“启动守卫”后，后台才会开始监控空闲并自动续跑。
@@ -244,7 +274,63 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
             >
               停止守卫
             </button>
+            <button type="button" className="ghost-button" disabled={debugLoading} onClick={loadDebugInfo}>
+              {debugLoading ? "读取中..." : "查看调试快照"}
+            </button>
           </div>
+          {debugInfo ? (
+            <div className="goal-debug-panel">
+              <div className="goal-debug-grid">
+                <div>守卫启用：{debugInfo.guardEnabled ? "是" : "否"}</div>
+                <div>当前状态：{goalStateLabel(debugInfo.goalState)}</div>
+                <div>tmux 存在：{debugInfo.hasTmuxSession ? "是" : "否"}</div>
+                <div>自动续跑次数：{debugInfo.autoResumeCount}</div>
+                <div>最近输出时间：{formatTimestamp(debugInfo.lastOutputAt)}</div>
+                <div>最近自动续跑：{formatTimestamp(debugInfo.lastAutoResumeAt)}</div>
+                <div>最近视口活动：{formatTimestamp(debugInfo.lastViewerActivityAt)}</div>
+                <div>快照是否变化：{debugInfo.snapshotChanged ? "是" : "否"}</div>
+                <div>命中 SUCCESS 单行：{debugInfo.matchedStandaloneSuccess ? "是" : "否"}</div>
+                <div>命中成功关键词：{debugInfo.matchedSuccessKeyword ?? "无"}</div>
+                <div>未完成信号：{debugInfo.matchedIncompleteSignals.join("、") || "无"}</div>
+              </div>
+              <div className="session-meta">
+                下面展示的是守卫启动时记录的基线 pane 快照，以及当前 pane 快照的末尾对比。若这里只改了时间、spinner、状态字，你就能直接看出来。
+              </div>
+              <label>
+                基线快照末尾
+                <textarea rows={8} value={debugInfo.baselineTailLines.join("\n")} readOnly />
+              </label>
+              <label>
+                当前快照末尾
+                <textarea rows={8} value={debugInfo.currentTailLines.join("\n")} readOnly />
+              </label>
+              <label>
+                差异行
+                <textarea
+                  rows={8}
+                  value={
+                    debugInfo.changedTailLines.length > 0
+                      ? debugInfo.changedTailLines
+                          .map(
+                            (entry) =>
+                              `#${entry.line}\nBASE: ${entry.baseline || "<empty>"}\nCURR: ${entry.current || "<empty>"}`,
+                          )
+                          .join("\n\n")
+                      : "没有发现末尾行差异"
+                  }
+                  readOnly
+                />
+              </label>
+              <label>
+                守卫判定输出窗口末尾
+                <textarea rows={10} value={debugInfo.goalWindowTailLines.join("\n")} readOnly />
+              </label>
+              <label>
+                清洗后的判定窗口末尾
+                <textarea rows={10} value={debugInfo.sanitizedGoalWindowTailLines.join("\n")} readOnly />
+              </label>
+            </div>
+          ) : null}
           {dirty ? <div className="session-meta">你有未保存的修改。</div> : null}
           {error ? <div className="error-banner inline-banner">{error}</div> : null}
           {savedNotice ? <div className="success-banner inline-banner">{savedNotice}</div> : null}

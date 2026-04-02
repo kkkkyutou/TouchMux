@@ -68,6 +68,25 @@ async function waitForGoalSatisfied(origin, token, sessionId, attempts = 30) {
   throw new Error("goal guard background smoke: 后台守卫未能在无附着终端时识别成功输出");
 }
 
+async function waitForStableSatisfied(origin, token, sessionId, attempts = 12) {
+  for (let index = 0; index < attempts; index += 1) {
+    const sessions = await requestJson(origin, token, "/api/session/list");
+    const current = sessions.items.find((item) => item.id === sessionId);
+    if (!current) {
+      throw new Error("goal guard background smoke: 会话在稳定性检查阶段丢失");
+    }
+    assert(
+      current.goalState === "goal_satisfied",
+      `goal guard background smoke: 达标后状态回退为 ${current.goalState}`,
+    );
+    assert(
+      current.status !== "auto_resuming",
+      "goal guard background smoke: 达标后仍触发了自动续跑",
+    );
+    await delay(250);
+  }
+}
+
 async function main() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "touchmux-goal-background-smoke-"));
   const homeDir = path.join(tempRoot, "home");
@@ -194,6 +213,7 @@ async function main() {
         finished.lastOutputPreview.includes("未完成前不要"),
       `goal guard background smoke: 自动续跑提示没有以单行方式提交: ${finished.lastOutputPreview}`,
     );
+    await waitForStableSatisfied(origin, token, created.id);
 
     const closed = await requestJson(origin, token, `/api/session/${created.id}/close`, {
       method: "POST",

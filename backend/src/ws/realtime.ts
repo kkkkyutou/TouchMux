@@ -168,17 +168,30 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
     ws.on("message", (buffer: RawData) => {
       try {
         const message = JSON.parse(buffer.toString()) as {
-          type: "input" | "resize";
+          type: "input" | "resize" | "tmux-copy-mode";
           payload?: string;
           cols?: number;
           rows?: number;
+          action?: "enter" | "page_up" | "page_down" | "line_up" | "line_down" | "exit";
+          repeat?: number;
         };
         if (message.type === "input" && typeof message.payload === "string") {
           runtime.sessionManager.noteInputActivity(sessionId);
           runtime.sessionManager.writeTerminal(ptyProcess, message.payload);
         }
+        if (
+          message.type === "tmux-copy-mode" &&
+          (message.action === "enter" ||
+            message.action === "page_up" ||
+            message.action === "page_down" ||
+            message.action === "line_up" ||
+            message.action === "line_down" ||
+            message.action === "exit")
+        ) {
+          runtime.sessionManager.tmuxCopyModeAction(sessionId, message.action, message.repeat);
+        }
         if (message.type === "resize" && typeof message.cols === "number" && typeof message.rows === "number") {
-          runtime.sessionManager.resizeTerminal(ptyProcess, message.cols, message.rows);
+          runtime.sessionManager.resizeTerminal(sessionId, ptyProcess, message.cols, message.rows);
         }
       } catch {
         return;

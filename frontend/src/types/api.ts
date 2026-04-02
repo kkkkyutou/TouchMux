@@ -30,6 +30,32 @@ export interface GoalGuardConfig {
   allowManualStopAfterSuccess: boolean;
 }
 
+export interface GoalGuardDebugInfo {
+  sessionId: string;
+  goalState: GoalState;
+  guardEnabled: boolean;
+  hasTmuxSession: boolean;
+  lastOutputAt: number | null;
+  lastAutoResumeAt: number | null;
+  lastViewerActivityAt: number | null;
+  autoResumeCount: number;
+  baselineSnapshot: string;
+  currentSnapshot: string;
+  snapshotChanged: boolean;
+  baselineTailLines: string[];
+  currentTailLines: string[];
+  goalWindowTailLines: string[];
+  sanitizedGoalWindowTailLines: string[];
+  matchedSuccessKeyword: string | null;
+  matchedStandaloneSuccess: boolean;
+  matchedIncompleteSignals: string[];
+  changedTailLines: Array<{
+    line: number;
+    baseline: string;
+    current: string;
+  }>;
+}
+
 export interface ChoiceOption {
   id: string;
   label: string;
@@ -72,6 +98,7 @@ export interface HistoryConversationSummary {
   lastUpdatedAt: number;
   firstUpdatedAt: number;
   messageCount: number;
+  firstSnippet: string;
   lastSnippet: string;
 }
 
