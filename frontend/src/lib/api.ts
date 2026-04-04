@@ -1,4 +1,5 @@
 import type {
+  AppServerBridgeProbeResult,
   FileEntry,
   GoalGuardConfig,
   GoalGuardDebugInfo,
@@ -110,6 +111,12 @@ export async function closeSession(
 
 export async function fetchSessionDetail(token: string, sessionId: string): Promise<SessionSummary> {
   return request<SessionSummary>(`/api/session/${sessionId}/detail`, token);
+}
+
+export async function runAppServerBridgeProbe(token: string, sessionId: string): Promise<AppServerBridgeProbeResult> {
+  return request<AppServerBridgeProbeResult>(`/api/session/${sessionId}/app-server-bridge-probe`, token, {
+    method: "POST",
+  });
 }
 
 export async function fetchHistory(token: string, nodeId?: string): Promise<HistoryConversationSummary[]> {

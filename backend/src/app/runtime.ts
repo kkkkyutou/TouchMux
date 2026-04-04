@@ -3,6 +3,8 @@ import { config } from "../core/config.js";
 import { AuditService } from "../services/auditService.js";
 import { CodexHistoryService } from "../services/codexHistoryService.js";
 import { FileService } from "../services/fileService.js";
+import { CodexAppServerNotificationManager } from "../services/codexAppServerNotificationManager.js";
+import { CodexAppServerThreadManager } from "../services/codexAppServerThreadManager.js";
 import { GoalGuardService } from "../services/goalGuardService.js";
 import { HubNodeService } from "../services/hubNodeService.js";
 import { LoginRateLimiter } from "../services/loginRateLimiter.js";
@@ -15,6 +17,8 @@ export interface LocalRuntime {
   repository: SessionRepository;
   sessionManager: SessionManager;
   goalGuardService: GoalGuardService;
+  codexAppServerNotificationManager: CodexAppServerNotificationManager;
+  codexAppServerThreadManager: CodexAppServerThreadManager;
   codexHistoryService: CodexHistoryService;
   fileService: FileService;
 }
@@ -41,10 +45,17 @@ export function createAppRuntime(): AppRuntime {
           const repository = new SessionRepository();
           const sessionManager = new SessionManager(repository);
           const goalGuardService = new GoalGuardService(sessionManager, repository, config.goalGuardIntervalMs);
+          const codexAppServerNotificationManager = new CodexAppServerNotificationManager(
+            repository,
+            config.goalGuardIntervalMs,
+          );
+          const codexAppServerThreadManager = new CodexAppServerThreadManager(repository, config.goalGuardIntervalMs);
           return {
             repository,
             sessionManager,
             goalGuardService,
+            codexAppServerNotificationManager,
+            codexAppServerThreadManager,
             codexHistoryService: new CodexHistoryService(),
             fileService: new FileService(config.workspaceRoots),
           };

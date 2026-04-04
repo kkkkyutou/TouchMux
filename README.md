@@ -177,6 +177,7 @@ ingress:
 - `GET /api/system/health` is a minimal anonymous probe.
 - `GET /api/system/health/detail` requires login.
 - Codex auth, history import, and session state follow `TOUCHMUX_SESSION_HOME`; if unset they follow the backend process HOME.
+- tmux sessions now keep the backend process `HOME` for shell/git/ssh/dotfiles, while Codex state is isolated via `CODEX_HOME=<TOUCHMUX_SESSION_HOME>/.codex`.
 - Hub -> Node HTTP and terminal WebSocket handshakes use shared-secret HMAC headers with timestamp and nonce:
   - `x-touchmux-node-secret`
   - `x-touchmux-node-ts`

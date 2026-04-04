@@ -295,13 +295,22 @@ export function registerLocalRoutes({
     });
   });
 
-  app.get(`${prefix}/goal-guard/:sessionId/debug`, authMiddleware, (request, response) => {
-    const debugInfo = localRuntime.sessionManager.getGoalDebugInfo(readPathParam(request.params.sessionId));
+  app.get(`${prefix}/goal-guard/:sessionId/debug`, authMiddleware, async (request, response) => {
+    const debugInfo = await localRuntime.sessionManager.getGoalDebugInfo(readPathParam(request.params.sessionId));
     if (!debugInfo) {
       response.status(404).json({ message: "会话不存在" });
       return;
     }
     response.json(debugInfo);
+  });
+
+  app.post(`${prefix}/session/:id/app-server-bridge-probe`, authMiddleware, async (request, response) => {
+    try {
+      const result = await localRuntime.sessionManager.probeAppServerBridge(readPathParam(request.params.id));
+      response.json(result);
+    } catch (error) {
+      sendError(response, error);
+    }
   });
 
   app.put(`${prefix}/goal-guard/:sessionId`, authMiddleware, (request, response) => {

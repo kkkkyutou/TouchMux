@@ -177,6 +177,7 @@ ingress:
 - `GET /api/system/health` 只暴露最小匿名探针。
 - `GET /api/system/health/detail` 需要登录。
 - Codex 登录态、历史导入和 sessions 目录默认跟随 `TOUCHMUX_SESSION_HOME`，未设置时跟随后端进程自己的 HOME。
+- tmux 会话现在会保留后端进程自己的 `HOME`，以便继续复用 shell / git / ssh / dotfiles；Codex 状态则单独通过 `CODEX_HOME=<TOUCHMUX_SESSION_HOME>/.codex` 隔离。
 - Hub -> Node 的 HTTP 和终端 WebSocket 握手现在都使用共享密钥 + 时间戳 + nonce + 签名：
   - `x-touchmux-node-secret`
   - `x-touchmux-node-ts`

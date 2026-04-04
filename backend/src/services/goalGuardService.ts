@@ -1,4 +1,8 @@
 import { SessionManager } from "./sessionManager.js";
+import {
+  reduceGoalGuardEvents,
+  reduceGoalGuardResumeDecision,
+} from "./goalGuardReducer.js";
 import { SessionRepository } from "./sessionRepository.js";
 
 export class GoalGuardService {
@@ -40,7 +44,7 @@ export class GoalGuardService {
       if (!session.goalConfig.enabled || session.status === "closed") {
         continue;
       }
-      if (session.goalState === "goal_satisfied") {
+      if (session.guardDecisionState === "satisfied") {
         this.sessionManager.reconcileGoalSatisfiedState(session.id);
       }
       this.sessionManager.syncSessionFromTmux(session.id, true);
@@ -49,17 +53,43 @@ export class GoalGuardService {
         !current ||
         !current.goalConfig.enabled ||
         current.status === "closed" ||
-        current.goalState === "goal_satisfied" ||
-        current.goalState === "failed_check"
+        current.guardDecisionState === "satisfied" ||
+        current.guardDecisionState === "blocked_by_missing_verifier" ||
+        current.guardDecisionState === "blocked_by_fatal_error"
       ) {
         continue;
       }
-      if (
-        current.goalState === "running" &&
-        current.lastOutputAt &&
-        Date.now() - current.lastOutputAt >= GoalGuardService.runningCooldownMs
-      ) {
-        this.sessionManager.markGuardWaiting(current.id);
+      const codexFatalReason = await this.sessionManager.detectCodexFatalGuardStop(current.id);
+      if (codexFatalReason) {
+        this.sessionManager.markGuardFailed(current.id, `检测到 Codex 结构化错误：${codexFatalReason}`);
+        continue;
+      }
+      const snapshot = await this.sessionManager.buildGoalGuardStateSnapshot(current.id);
+      const reduction = reduceGoalGuardEvents({
+        codexObservation: snapshot.codexObservation,
+        terminalDiagnostics: snapshot.terminalDiagnostics,
+        hasKeywordRule: snapshot.hasKeywordRule,
+        verificationKind: snapshot.verificationKind,
+        allowTerminalSignals: snapshot.allowTerminalSignals,
+      });
+      if (reduction.nextState === "observing_codex_turn") {
+        this.sessionManager.markGuardObservingCodexTurn(
+          current.id,
+          "守卫当前主要依据结构化 Codex 事件确认 turn 仍在执行，因此继续等待，不触发自动续跑。",
+        );
+        continue;
+      }
+      const resumeReduction = reduceGoalGuardResumeDecision({
+        currentState: snapshot.session.guardDecisionState,
+        hasRecentOutput: snapshot.hasRecentOutput,
+        hasBootstrapped: snapshot.hasBootstrapped,
+        withinActivationSettleWindow: snapshot.withinActivationSettleWindow,
+        reachedFirstProbeDelay: snapshot.reachedFirstProbeDelay,
+        idleTimedOut: snapshot.idleTimedOut,
+        hasTmuxSession: snapshot.hasTmuxSession,
+      });
+      if (resumeReduction.action === "mark_waiting") {
+        this.sessionManager.markGuardWaiting(current.id, resumeReduction.reason);
         continue;
       }
       const fatalReason = this.sessionManager.detectFatalGuardStop(current.id);
@@ -71,22 +101,9 @@ export class GoalGuardService {
       if (success) {
         continue;
       }
-      const runtime = this.repository.getRuntimeState(current.id);
-      const hasBootstrapped = (runtime?.autoResumeCount ?? 0) > 0;
-      if (!hasBootstrapped && Date.now() - current.createdAt >= GoalGuardService.firstProbeDelayMs) {
-        if (this.sessionManager.hasTmuxSession(current.tmuxSessionName)) {
-          this.sessionManager.autoResume(current.id);
-        }
-        continue;
+      if (resumeReduction.action === "auto_resume") {
+        this.sessionManager.autoResume(current.id, resumeReduction.reason);
       }
-      const idleSince = this.sessionManager.getLastActivityAt(current.id) ?? current.createdAt;
-      if (Date.now() - idleSince < current.goalConfig.idleTimeoutSec * 1000) {
-        continue;
-      }
-      if (!this.sessionManager.hasTmuxSession(current.tmuxSessionName)) {
-        continue;
-      }
-      this.sessionManager.autoResume(current.id);
     }
   }
 

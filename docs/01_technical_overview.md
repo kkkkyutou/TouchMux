@@ -44,7 +44,37 @@ TouchMux 是一个移动优先的远程工作台，目标是通过网页操作 `
 4. 输出缓冲被后端用于：
    - 最近输出预览
    - 选择项识别
-   - goal guard 成功判定
+   - terminal fallback 调试与兼容判定
+5. Goal Guard 的正式主判定已切到结构化事实链：
+   - `CLI rollout -> CodexObserver`
+   - `app-server thread/read + notification -> CodexAppServerObserver`
+   - `reducer -> verificationReceipt -> satisfied / failed`
+
+当前这条链路在代码里应被明确理解为：
+
+- `executionChannel = tmux_local_tui`
+
+它表示：
+
+- TouchMux 当前正式主链路是“tmux 内启动本地 Codex TUI”
+- 当前所有通过 rollout / terminal 观察到的 session id，都应被理解为这条本地 TUI 链路的派生信号
+
+未来如果切到 app-server-backed 模式，应单独引入另一条链路：
+
+- `executionChannel = app_server_remote_tui`
+
+在那条链路落地前，不应把 `app-server thread/start` 返回的 thread id 直接当成当前 tmux 会话的真实 id。
+
+不过就 Goal Guard 而言，`app_server_remote_tui` 相关的结构化事实层已经提前落地为后台观测能力，而不是正式执行主链。这一层当前已经包含：
+
+- `CodexAppServerThreadManager`
+  - 周期维护 `thread/read(includeTurns=true)` snapshot
+- `CodexAppServerNotificationManager`
+  - 在存在活跃 app-server 线程时保持最小后台常驻连接
+- `CodexAppServerObserver`
+  - 统一合并 thread snapshot、notification cache 与失败态冲突
+- `appServerDebugSummary`
+  - 统一展示最终状态、状态来源、fatalError 和后台健康
 
 ### Hub
 
@@ -69,5 +99,9 @@ TouchMux 是一个移动优先的远程工作台，目标是通过网页操作 `
 - 受控工作区文件访问已实现。
 - 现在已支持“Hub + 多 Node 的统一入口”第一版，但仍是单用户优先设计。
 - 节点注册目前是静态配置，不支持自动注册和网页内节点管理。
-- goal guard 目前基于规则，不是智能理解型判定。
+- goal guard 当前已经不是“纯文本规则猜测成功/失败”。
+- 当前正式语义是“结构化事实 + verifier receipt”。
+- 但它仍然不能被表述成“100% 绝对准确”。
+  - 当前 notification manager 仍是最小后台常驻版
+  - 还没有做到 per-thread 长周期健康统计与强一致恢复
 - 多用户、多权限、细粒度节点授权和完整安全加固仍未实现。

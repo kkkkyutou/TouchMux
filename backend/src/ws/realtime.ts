@@ -176,7 +176,7 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
           repeat?: number;
         };
         if (message.type === "input" && typeof message.payload === "string") {
-          runtime.sessionManager.noteInputActivity(sessionId);
+          runtime.sessionManager.noteInputActivity(sessionId, message.payload);
           runtime.sessionManager.writeTerminal(ptyProcess, message.payload);
         }
         if (
@@ -307,6 +307,8 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
   });
 
   if (localRuntime) {
+    localRuntime.codexAppServerNotificationManager.start();
+    localRuntime.codexAppServerThreadManager.start();
     localRuntime.goalGuardService.start();
   }
 

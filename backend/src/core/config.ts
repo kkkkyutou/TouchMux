@@ -8,7 +8,9 @@ import type { NodeConfigEntry, RuntimeMode, WorkspaceEntry } from "../types/mode
 const backendRoot = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const projectRoot = path.resolve(backendRoot, "..");
 const homeRoot = os.homedir();
+const runtimeHome = path.resolve(process.env.HOME ?? homeRoot);
 const sessionHome = path.resolve(process.env.TOUCHMUX_SESSION_HOME ?? homeRoot);
+const codexHomeDir = path.join(sessionHome, ".codex");
 
 dotenv.config({ path: path.join(projectRoot, ".env") });
 dotenv.config({ path: path.join(backendRoot, ".env") });
@@ -91,7 +93,9 @@ export interface AppConfig {
   dataDir: string;
   historyFile: string;
   sessionsDir: string;
+  runtimeHome: string;
   sessionHome: string;
+  codexHomeDir: string;
   shell: string;
   goalGuardIntervalMs: number;
   defaultIdleTimeoutSec: number;
@@ -128,9 +132,11 @@ export const config: AppConfig = {
   jwtSecret: process.env.TOUCHMUX_JWT_SECRET ?? "change-this-secret",
   tokenTtlSec: Number(process.env.TOUCHMUX_TOKEN_TTL_SEC ?? 60 * 60 * 24 * 7),
   dataDir,
-  historyFile: path.join(sessionHome, ".codex", "history.jsonl"),
-  sessionsDir: path.join(sessionHome, ".codex", "sessions"),
+  historyFile: path.join(codexHomeDir, "history.jsonl"),
+  sessionsDir: path.join(codexHomeDir, "sessions"),
+  runtimeHome,
   sessionHome,
+  codexHomeDir,
   shell: process.env.TOUCHMUX_DEFAULT_SHELL ?? "/bin/bash",
   goalGuardIntervalMs: Number(process.env.TOUCHMUX_GOAL_GUARD_INTERVAL_MS ?? 5000),
   defaultIdleTimeoutSec: Number(process.env.TOUCHMUX_IDLE_TIMEOUT_SEC ?? 90),
@@ -271,7 +277,7 @@ export const configSchema: ConfigSchemaEntry[] = [
     required: false,
     defaultValue: homeRoot,
     example: "/home/your-user",
-    description: "TouchMux 会话默认使用的 HOME；Codex 登录态、历史索引和 sessions 目录都跟随这里。",
+    description: "TouchMux 使用的会话状态根目录；当前会映射出 CODEX_HOME=<此目录>/.codex，但不会再覆盖 shell 的 HOME。",
   },
   {
     key: "TOUCHMUX_NODE_ID",

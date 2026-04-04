@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -11,6 +12,27 @@ function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+async function reservePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("goal guard background smoke: 无法分配空闲端口")));
+        return;
+      }
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(address.port);
+      });
+    });
+  });
 }
 
 async function waitForServer(origin, attempts = 40) {
@@ -107,6 +129,7 @@ async function main() {
       "sleep 0.3",
       "echo \"SUCCESS\"",
       "while IFS= read -r line; do",
+      `  touch ${JSON.stringify(path.join(workspaceDir, "guard-success.txt"))}`,
       "  echo \"received:$line\"",
       "  echo \"SUCCESS\"",
       "done",
@@ -116,7 +139,7 @@ async function main() {
   );
   fs.chmodSync(mockCodexPath, 0o755);
 
-  const port = 8900;
+  const port = await reservePort();
   const password = "goal-background-password";
   const server = spawn("node", [backendEntry], {
     cwd: projectRoot,
@@ -194,7 +217,7 @@ async function main() {
         enabled: true,
         goalText: "等待后台收到守卫提示后\n再输出 SUCCESS",
         successKeywords: ["SUCCESS"],
-        successCommand: null,
+        successCommand: "test -f guard-success.txt",
         idleTimeoutSec: 1,
         resumePromptTemplate: "继续执行既定目标，\n未完成前不要停止。",
         allowManualStopAfterSuccess: true,
@@ -202,6 +225,8 @@ async function main() {
     });
 
     assert(restarted.goalState === "idle_waiting", `goal guard background smoke: 重新配置后状态异常 ${restarted.goalState}`);
+    assert(typeof restarted.currentTaskRunId === "string" && restarted.currentTaskRunId.length > 0, "goal guard background smoke: 缺少 taskRunId");
+    assert(restarted.verificationReceipt === null, "goal guard background smoke: 新 taskRun 启动时不应带旧 receipt");
 
     const finished = await waitForGoalSatisfied(origin, token, created.id);
     assert(
@@ -213,6 +238,10 @@ async function main() {
         finished.lastOutputPreview.includes("未完成前不要"),
       `goal guard background smoke: 自动续跑提示没有以单行方式提交: ${finished.lastOutputPreview}`,
     );
+    assert(finished.currentTaskRunId === restarted.currentTaskRunId, "goal guard background smoke: taskRunId 不应在同一轮验收中漂移");
+    assert(finished.verificationReceipt?.schema === "touchmux.goal_guard.result.v1", "goal guard background smoke: 缺少 verifier receipt");
+    assert(finished.verificationReceipt?.status === "success", "goal guard background smoke: verifier receipt 未标记成功");
+    assert(finished.verificationReceipt?.verificationKind === "command_check", "goal guard background smoke: 本轮应走 command_check");
     await waitForStableSatisfied(origin, token, created.id);
 
     const closed = await requestJson(origin, token, `/api/session/${created.id}/close`, {

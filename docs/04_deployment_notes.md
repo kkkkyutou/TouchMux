@@ -78,7 +78,8 @@ docker compose up --build
 
 重要：
 
-- TouchMux 启动 `codex` 时，会默认使用服务进程自己的 `HOME`。
+- TouchMux 启动 tmux / shell 时，会保留服务进程自己的 `HOME`。
+- Codex 状态目录会额外映射为 `CODEX_HOME=<TOUCHMUX_SESSION_HOME>/.codex`。
 - 如果你希望网页终端直接复用“当前机器上已经登录好的 Codex”，最稳妥的方式是让 TouchMux 也运行在同一个 Linux 用户下。
 - 如果必须用独立服务用户，请显式设置 `TOUCHMUX_SESSION_HOME`，并确认该服务用户对这个目录以及其中的 `.codex` 具备读写权限。
 

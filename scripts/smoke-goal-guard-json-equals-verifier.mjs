@@ -21,7 +21,7 @@ async function reservePort() {
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("goal guard submit race smoke: 无法分配空闲端口")));
+        server.close(() => reject(new Error("json equals verifier smoke: 无法分配空闲端口")));
         return;
       }
       server.close((error) => {
@@ -47,7 +47,7 @@ async function waitForServer(origin, attempts = 40) {
     }
     await delay(250);
   }
-  throw new Error("goal guard submit race smoke: backend 启动超时");
+  throw new Error("json equals verifier smoke: backend 启动超时");
 }
 
 async function login(origin, password) {
@@ -56,9 +56,12 @@ async function login(origin, password) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ password }),
   });
-  assert(response.ok, "goal guard submit race smoke: 登录失败");
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`json equals verifier smoke: 登录失败: ${response.status} ${text}`);
+  }
   const data = await response.json();
-  assert(typeof data.token === "string" && data.token.length > 10, "goal guard submit race smoke: token 无效");
+  assert(typeof data.token === "string" && data.token.length > 10, "json equals verifier smoke: token 无效");
   return data.token;
 }
 
@@ -73,29 +76,30 @@ async function requestJson(origin, token, pathname, init = undefined) {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`goal guard submit race smoke: ${pathname} 失败: ${response.status} ${text}`);
+    throw new Error(`json equals verifier smoke: ${pathname} 失败: ${response.status} ${text}`);
   }
   return response.json();
 }
 
-async function waitForGuardBlockedByMissingVerifier(origin, token, sessionId, attempts = 40) {
+async function waitForSatisfied(origin, token, sessionId, attempts = 40) {
   for (let index = 0; index < attempts; index += 1) {
     const sessions = await requestJson(origin, token, "/api/session/list");
     const current = sessions.items.find((item) => item.id === sessionId);
-    if (current?.guardDecisionState === "blocked_by_missing_verifier") {
+    if (current?.guardDecisionState === "satisfied") {
       return current;
     }
     await delay(250);
   }
-  throw new Error("goal guard submit race smoke: 未进入缺少严格 verifier 的阻塞态");
+  throw new Error("json equals verifier smoke: 未进入 satisfied");
 }
 
 async function main() {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "touchmux-goal-submit-race-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "touchmux-json-equals-verifier-"));
   const homeDir = path.join(tempRoot, "home");
   const workspaceDir = path.join(tempRoot, "workspace");
   const dataDir = path.join(tempRoot, "data");
-  const mockCodexPath = path.join(tempRoot, "mock-codex-submit-race.sh");
+  const outputFile = path.join(workspaceDir, "result.json");
+  const mockCodexPath = path.join(tempRoot, "mock-codex-json-equals.sh");
   fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true });
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(dataDir, { recursive: true });
@@ -105,41 +109,13 @@ async function main() {
     [
       "#!/usr/bin/env bash",
       "set -euo pipefail",
-      "",
-      "if [[ \"${1:-}\" == \"--help\" ]]; then echo \"mock-codex-submit-race\"; exit 0; fi",
-      "",
-      "submit_threshold_ms=120",
-      "draft=\"\"",
-      "last_printable_at=0",
-      "",
-      "stty -echo -icanon min 1 time 0",
-      "cleanup() {",
-      "  stty sane || true",
-      "}",
-      "trap cleanup EXIT",
-      "",
-      "printf 'mock-codex-ready\\n\\n› '",
-      "",
-      "submit_draft() {",
-      "  local payload=\"$draft\"",
-      "  draft=\"\"",
-      "  printf '\\r\\n◦ Working (mock)\\r\\nsubmitted:%s\\r\\nACK_OK\\r\\n\\r\\n› ' \"$payload\"",
-      "}",
-      "",
-      "while IFS= read -rsn1 char; do",
-      "  if [[ \"$char\" == $'\\003' ]]; then",
-      "    exit 0",
-      "  fi",
-      "  if [[ -z \"$char\" || \"$char\" == $'\\r' || \"$char\" == $'\\n' ]]; then",
-      "    now=$(date +%s%3N)",
-      "    if [[ -n \"$draft\" ]] && (( now - last_printable_at >= submit_threshold_ms )); then",
-      "      submit_draft",
-      "    fi",
-      "    continue",
-      "  fi",
-      "  draft+=\"$char\"",
-      "  last_printable_at=$(date +%s%3N)",
-      "  printf '%s' \"$char\"",
+      "if [[ \"${1:-}\" == \"--help\" ]]; then echo \"mock-codex-json-equals\"; exit 0; fi",
+      "echo ready",
+      "while IFS= read -r line; do",
+      `  cat > ${JSON.stringify(outputFile)} <<'EOF'`,
+      '{"status":"ok","nested":{"count":2}}',
+      "EOF",
+      "  echo SUCCESS",
       "done",
       "",
     ].join("\n"),
@@ -148,7 +124,7 @@ async function main() {
   fs.chmodSync(mockCodexPath, 0o755);
 
   const port = await reservePort();
-  const password = "goal-submit-race-password";
+  const password = "json-equals-verifier-password";
   const server = spawn("node", [backendEntry], {
     cwd: projectRoot,
     env: {
@@ -156,7 +132,7 @@ async function main() {
       HOME: homeDir,
       TOUCHMUX_RUNTIME_MODE: "single",
       TOUCHMUX_PASSWORD: password,
-      TOUCHMUX_JWT_SECRET: "goal-submit-race-jwt-secret-1234567890",
+      TOUCHMUX_JWT_SECRET: "json-equals-verifier-jwt-secret-1234567890",
       TOUCHMUX_HOST: "127.0.0.1",
       TOUCHMUX_PORT: String(port),
       TOUCHMUX_DATA_DIR: dataDir,
@@ -179,58 +155,46 @@ async function main() {
     const token = await login(origin, password);
     const nodes = await requestJson(origin, token, "/api/nodes");
     const workspaceRoot = nodes.items[0]?.roots?.[0]?.rootPath;
-    assert(typeof workspaceRoot === "string" && workspaceRoot === workspaceDir, "goal guard submit race smoke: 根目录异常");
+    assert(workspaceRoot === workspaceDir, "json equals verifier smoke: 根目录异常");
 
     const created = await requestJson(origin, token, "/api/session/create", {
       method: "POST",
       body: JSON.stringify({
         nodeId: "local",
-        title: "goal submit race smoke session",
+        title: "json equals verifier smoke session",
         workspaceRoot,
         cwd: ".",
         mode: "new",
       }),
     });
-    assert(typeof created.id === "string", "goal guard submit race smoke: 创建会话失败");
+    assert(typeof created.id === "string", "json equals verifier smoke: 创建会话失败");
 
-    await delay(500);
     const started = await requestJson(origin, token, `/api/goal-guard/${created.id}`, {
       method: "PUT",
       body: JSON.stringify({
         enabled: true,
-        goalText: "等待自动续跑真正提交",
-        successKeywords: ["ACK_OK"],
-        successCommand: null,
+        goalText: "等待结构化 verifier 验收 result.json.status 等于 ok",
+        successKeywords: ["SUCCESS"],
+        successCommand: 'json_equals:result.json::status::"ok"',
         idleTimeoutSec: 1,
-        resumePromptTemplate: "请回复 ACK_OK",
+        resumePromptTemplate: "继续执行并写出 result.json",
         allowManualStopAfterSuccess: true,
       }),
     });
-    assert(started.goalState === "idle_waiting", `goal guard submit race smoke: 启动后状态异常 ${started.goalState}`);
-    assert(typeof started.currentTaskRunId === "string" && started.currentTaskRunId.length > 0, "goal guard submit race smoke: 缺少 taskRunId");
+    assert(started.verificationSpec?.kind === "json_field_equals", "json equals verifier smoke: verificationSpec.kind 应为 json_field_equals");
 
-    const finished = await waitForGuardBlockedByMissingVerifier(origin, token, created.id);
-    assert(
-      typeof finished.lastOutputPreview === "string" &&
-        finished.lastOutputPreview.includes("submitted:当前目标：等待自动续跑真正提交；请回复 ACK_OK"),
-      `goal guard submit race smoke: 未看到真正提交后的 mock 输出: ${finished.lastOutputPreview}`,
-    );
-    assert(finished.currentTaskRunId === started.currentTaskRunId, "goal guard submit race smoke: taskRunId 不应漂移");
-    assert(finished.verificationReceipt?.schema === "touchmux.goal_guard.result.v1", "goal guard submit race smoke: 缺少 verifier receipt");
-    assert(finished.verificationReceipt?.status === "failed", "goal guard submit race smoke: verifier receipt 应标记为失败");
-    assert(finished.verificationReceipt?.verificationKind === "candidate_signal", "goal guard submit race smoke: 本轮应走 candidate_signal");
-    assert(
-      typeof finished.guardDecisionReason === "string" && finished.guardDecisionReason.includes("未配置严格 verifier"),
-      `goal guard submit race smoke: 缺少严格 verifier 的阻塞原因不正确: ${finished.guardDecisionReason}`,
-    );
+    const finished = await waitForSatisfied(origin, token, created.id);
+    assert(finished.verificationReceipt?.status === "success", "json equals verifier smoke: verifier receipt 未标记成功");
+    assert(finished.verificationReceipt?.verificationKind === "json_field_equals", "json equals verifier smoke: receipt kind 应为 json_field_equals");
+    assert(JSON.parse(fs.readFileSync(outputFile, "utf8")).status === "ok", "json equals verifier smoke: result.json.status 异常");
 
     const closed = await requestJson(origin, token, `/api/session/${created.id}/close`, {
       method: "POST",
       body: JSON.stringify({ nodeId: "local", force: true }),
     });
-    assert(closed.status === "closed", "goal guard submit race smoke: 关闭会话失败");
+    assert(closed.status === "closed", "json equals verifier smoke: 关闭会话失败");
 
-    console.log("goal-guard-submit-race-smoke: ok");
+    console.log("goal-guard-json-equals-verifier-smoke: ok");
   } finally {
     server.kill("SIGTERM");
     await delay(200);

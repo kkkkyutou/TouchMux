@@ -1,19 +1,47 @@
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { spawn, type IPty } from "node-pty";
 import { config } from "../core/config.js";
 import type {
+  AppServerDebugSummary,
+  AppServerNotificationSummary,
+  AppServerNotificationManagerSummary,
+  AppServerThreadManagerSummary,
+  AppServerBridgeProbeResult,
+  CodexObservation,
   ChoiceOverlay,
   CreateSessionInput,
+  GuardEventRecord,
+  GuardDecisionState,
+  GoalSpec,
   GoalGuardConfig,
   GoalState,
   ManagedSessionRecord,
   SessionSummary,
   SessionStatus,
+  SuccessEvidence,
+  VerificationReceipt,
+  VerificationSpec,
+  GoalGuardProgressSignal,
+  GoalGuardStructuredFactSource,
 } from "../types/models.js";
+import { codexAppServerNotificationCache } from "./codexAppServerNotificationCache.js";
+import { getCodexAppServerNotificationManagerSummary } from "./codexAppServerNotificationManager.js";
+import { codexAppServerThreadCache } from "./codexAppServerThreadCache.js";
 import { detectChoiceOverlay } from "./choiceDetector.js";
+import { CodexAppServerObserver } from "./codexAppServerObserver.js";
+import { CodexAppServerProbeClient } from "./codexAppServerProbe.js";
+import { CodexObserver } from "./codexObserver.js";
+import {
+  type GoalGuardStateSnapshot,
+  type TerminalGoalCandidateDiagnostics,
+  reduceGoalGuardEvents,
+  reduceGoalGuardOutputActivity,
+  reduceGoalGuardVerificationResult,
+} from "./goalGuardReducer.js";
 import { SessionRepository } from "./sessionRepository.js";
 import { normalizeInsideRoot } from "../utils/paths.js";
 import { quoteArgs } from "../utils/shell.js";
@@ -21,10 +49,15 @@ import { quoteArgs } from "../utils/shell.js";
 interface RuntimeState {
   buffer: string;
   choiceOverlay: ChoiceOverlay;
+  goalActivatedAt: number | null;
   lastAutoResumeAt: number | null;
   autoResumeCount: number;
   lastInputAt: number | null;
   goalCheckOffset: number;
+  goalCheckEventSeq: number;
+  lastGuardPromptAt: number | null;
+  lastGuardPromptText: string;
+  lastCapturedPane: string;
   lastPaneSnapshot: string;
   goalCheckPaneSnapshot: string;
   lastViewerActivityAt: number | null;
@@ -33,9 +66,22 @@ interface RuntimeState {
 interface GoalGuardDebugInfo {
   sessionId: string;
   goalState: GoalState;
+  guardDecisionState: GuardDecisionState;
+  guardDecisionReason: string | null;
+  currentTaskRunId: string | null;
   guardEnabled: boolean;
   hasTmuxSession: boolean;
+  goalActivatedAt: number | null;
   lastOutputAt: number | null;
+  structuredLastEventAt: number | null;
+  observedActivityAt: number | null;
+  progressSignal: GoalGuardProgressSignal;
+  structuredFactSource: GoalGuardStructuredFactSource;
+  terminalSignalsAllowed: boolean;
+  appServerNotificationSummary: AppServerNotificationSummary;
+  appServerNotificationManagerSummary: AppServerNotificationManagerSummary;
+  appServerThreadManagerSummary: AppServerThreadManagerSummary;
+  appServerDebugSummary: AppServerDebugSummary;
   lastAutoResumeAt: number | null;
   lastViewerActivityAt: number | null;
   autoResumeCount: number;
@@ -54,17 +100,42 @@ interface GoalGuardDebugInfo {
     baseline: string;
     current: string;
   }>;
+  goalSpec: GoalSpec | null;
+  verificationSpec: VerificationSpec | null;
+  verificationReceipt: VerificationReceipt | null;
+  recentEvents: GuardEventRecord[];
+  successEvidence: SuccessEvidence | null;
+  codexObservation: CodexObservation;
 }
 
 interface GoalMatchDiagnostics {
   matchedSuccessKeyword: string | null;
   matchedStandaloneSuccess: boolean;
   matchedIncompleteSignals: string[];
+  evidenceEventSeq: number | null;
   sanitizedGoalWindow: string;
+}
+
+interface GoalVerificationCandidate {
+  kind: SuccessEvidence["kind"];
+  source: "codex_assistant_message" | "terminal_signal";
+  eventSeq: number | null;
+  detail: string;
+}
+
+interface ParsedStructuredVerifier {
+  kind: VerificationSpec["kind"];
+  path?: string;
+  containsText?: string;
+  jsonPath?: string;
+  expectedValue?: unknown;
 }
 
 const submitDelayArray = new Int32Array(new SharedArrayBuffer(4));
 const tmuxLiteralSubmitDelayMs = 300;
+const guardEchoWindowMs = 4000;
+const goalGuardFirstProbeDelayMs = 5000;
+const goalGuardRunningCooldownMs = 4000;
 
 const hiddenOverlay: ChoiceOverlay = {
   visible: false,
@@ -78,10 +149,15 @@ function defaultRuntimeState(): RuntimeState {
   return {
     buffer: "",
     choiceOverlay: hiddenOverlay,
+    goalActivatedAt: null,
     lastAutoResumeAt: null,
     autoResumeCount: 0,
     lastInputAt: null,
     goalCheckOffset: 0,
+    goalCheckEventSeq: 0,
+    lastGuardPromptAt: null,
+    lastGuardPromptText: "",
+    lastCapturedPane: "",
     lastPaneSnapshot: "",
     goalCheckPaneSnapshot: "",
     lastViewerActivityAt: null,
@@ -181,25 +257,223 @@ function getGoalMatchDiagnostics(goalWindow: string, goalConfig: GoalGuardConfig
       ) ?? null,
     matchedStandaloneSuccess: hasStandaloneSuccessMarker(sanitizedGoalWindow),
     matchedIncompleteSignals: findIncompleteProgressSignals(sanitizedGoalWindow),
+    evidenceEventSeq: null,
     sanitizedGoalWindow,
   };
 }
 
-function mergeRuntimeBuffer(existing: string, captured: string): string {
-  const trimmedCaptured = captured.trim();
-  if (!trimmedCaptured) {
+function stripGuardPromptEchoFromText(value: string, goalConfig: GoalGuardConfig, recentPromptText: string): string {
+  const fragments = [
+    ...buildGuardPromptFragments(goalConfig),
+    recentPromptText.trim(),
+  ].filter(Boolean);
+  if (fragments.length === 0) {
+    return value;
+  }
+  let stripped = value;
+  for (const fragment of fragments) {
+    if (!fragment) {
+      continue;
+    }
+    stripped = stripped.split(fragment).join("");
+  }
+  return stripped;
+}
+
+function getGoalMatchDiagnosticsFromEvents(
+  events: GuardEventRecord[],
+  goalConfig: GoalGuardConfig,
+  recentPromptText: string,
+): GoalMatchDiagnostics {
+  const terminalEvents = events.filter((event) => event.source === "terminal_output");
+  const sanitizedEvents = terminalEvents.map((event) => ({
+    ...event,
+    text: stripGuardPromptEchoFromText(event.text, goalConfig, recentPromptText),
+  }));
+  const joinedOutput = sanitizedEvents.map((event) => event.text).join("\n");
+  const baseDiagnostics = getGoalMatchDiagnostics(joinedOutput, goalConfig);
+  const matchedEvent = sanitizedEvents.find((event) => {
+    const diagnostics = getGoalMatchDiagnostics(event.text, goalConfig);
+    return diagnostics.matchedStandaloneSuccess || diagnostics.matchedSuccessKeyword !== null;
+  });
+  return {
+    ...baseDiagnostics,
+    evidenceEventSeq: matchedEvent?.seq ?? null,
+  };
+}
+
+function toTerminalGoalCandidateDiagnostics(value: GoalMatchDiagnostics): TerminalGoalCandidateDiagnostics {
+  return {
+    matchedSuccessKeyword: value.matchedSuccessKeyword,
+    matchedStandaloneSuccess: value.matchedStandaloneSuccess,
+    matchedIncompleteSignals: value.matchedIncompleteSignals,
+    evidenceEventSeq: value.evidenceEventSeq,
+  };
+}
+
+function resolveProgressSignal(
+  codexObservation: CodexObservation,
+  allowTerminalSignals: boolean,
+  terminalDiagnostics: TerminalGoalCandidateDiagnostics,
+): GoalGuardProgressSignal {
+  if (codexObservation.available && codexObservation.lastEventAt !== null) {
+    return "structured_codex";
+  }
+  if (
+    allowTerminalSignals
+    && (
+      terminalDiagnostics.matchedStandaloneSuccess
+      || terminalDiagnostics.matchedSuccessKeyword !== null
+      || terminalDiagnostics.matchedIncompleteSignals.length > 0
+    )
+  ) {
+    return "terminal_fallback";
+  }
+  return "none";
+}
+
+function resolveStructuredFactSource(
+  session: ManagedSessionRecord,
+  codexObservation: CodexObservation,
+  notificationSummary: AppServerNotificationSummary,
+): GoalGuardStructuredFactSource {
+  if (!codexObservation.available) {
+    return "none";
+  }
+  if (session.executionChannel === "app_server_remote_tui") {
+    return notificationSummary.cachedCount > 0
+      ? "app_server_notification_cache"
+      : "app_server_thread_read";
+  }
+  return "rollout_observer";
+}
+
+function buildAppServerDebugSummary(
+  codexObservation: CodexObservation,
+  notificationManager: AppServerNotificationManagerSummary,
+  notificationCache: AppServerNotificationSummary,
+  threadManager: AppServerThreadManagerSummary,
+): AppServerDebugSummary {
+  const enabled =
+    notificationManager.active
+    || threadManager.tracked
+    || notificationCache.threadId !== null
+    || codexObservation.matchedSessionId !== null;
+  const healthStatus: AppServerDebugSummary["healthStatus"] =
+    !enabled
+      ? "disabled"
+      : codexObservation.fatalError
+        ? "fatal_error"
+        : notificationManager.active && !notificationManager.connected
+          ? "notification_disconnected"
+          : threadManager.tracked && !threadManager.hasSnapshot
+            ? "waiting_snapshot"
+            : "healthy";
+  const healthLabel =
+    healthStatus === "disabled"
+      ? "未启用"
+      : healthStatus === "fatal_error"
+        ? "存在结构化错误"
+        : healthStatus === "notification_disconnected"
+          ? "后台通知未连接"
+          : healthStatus === "waiting_snapshot"
+            ? "等待 thread snapshot"
+            : "结构化链路正常";
+  return {
+    enabled,
+    matchedThreadId: codexObservation.matchedSessionId,
+    finalTurnState: codexObservation.turnState,
+    finalTurnStateSource: codexObservation.appServerTurnStateSource,
+    fatalError: codexObservation.fatalError,
+    healthStatus,
+    healthLabel,
+    notificationManager,
+    notificationCache,
+    threadManager,
+  };
+}
+
+function splitPaneLines(value: string): string[] {
+  return value.replace(/\r\n/g, "\n").split("\n");
+}
+
+function extractIncrementalPaneDelta(previousPane: string, currentPane: string): string {
+  if (!currentPane.trim()) {
+    return "";
+  }
+  if (!previousPane.trim()) {
+    return currentPane;
+  }
+  if (currentPane === previousPane) {
+    return "";
+  }
+
+  const previousLines = splitPaneLines(previousPane);
+  const currentLines = splitPaneLines(currentPane);
+  const maxOverlap = Math.min(previousLines.length, currentLines.length);
+
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    let matched = true;
+    for (let index = 0; index < overlap; index += 1) {
+      if (previousLines[previousLines.length - overlap + index] !== currentLines[index]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      const delta = currentLines.slice(overlap).join("\n");
+      return delta.trim() ? `${delta}${currentPane.endsWith("\n") ? "\n" : ""}` : "";
+    }
+  }
+
+  if (currentPane.includes(previousPane)) {
+    return currentPane.slice(currentPane.indexOf(previousPane) + previousPane.length);
+  }
+
+  return currentPane;
+}
+
+function appendIncrementalOutput(existing: string, delta: string): string {
+  if (!delta) {
     return existing.slice(-30000);
   }
   if (!existing) {
-    return captured.slice(-30000);
+    return delta.slice(-30000);
   }
-  if (existing.includes(captured)) {
+  if (existing.endsWith(delta)) {
     return existing.slice(-30000);
   }
-  if (captured.includes(existing)) {
-    return captured.slice(-30000);
+
+  const maxOverlap = Math.min(existing.length, delta.length, 4000);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    if (existing.slice(-overlap) === delta.slice(0, overlap)) {
+      return `${existing}${delta.slice(overlap)}`.slice(-30000);
+    }
   }
-  return `${existing}\n${captured}`.slice(-30000);
+
+  return `${existing}${delta}`.slice(-30000);
+}
+
+function normalizeGuardEventText(value: string): string {
+  return normalizeTerminalTextForGoalMatch(value).replace(/\s+/g, " ").trim().slice(-600);
+}
+
+function hasMeaningfulTerminalDelta(value: string): boolean {
+  return normalizeGuardEventText(value).length > 0;
+}
+
+function isLikelyGuardEcho(promptText: string, outputText: string): boolean {
+  const normalizedPrompt = normalizeGuardEventText(promptText);
+  const normalizedOutput = normalizeGuardEventText(outputText);
+  if (!normalizedPrompt || !normalizedOutput) {
+    return false;
+  }
+  if (normalizedOutput.includes(normalizedPrompt) || normalizedPrompt.includes(normalizedOutput)) {
+    return true;
+  }
+  const promptTokens = normalizedPrompt.split(" ").filter(Boolean);
+  const hitCount = promptTokens.filter((token) => normalizedOutput.includes(token)).length;
+  return promptTokens.length > 0 && hitCount / promptTokens.length >= 0.7;
 }
 
 function buildPaneSnapshot(value: string): string {
@@ -207,6 +481,12 @@ function buildPaneSnapshot(value: string): string {
 }
 
 function hasNewOutputSinceGoalCheckpoint(runtime: RuntimeState): boolean {
+  if (
+    runtime.goalActivatedAt !== null &&
+    Date.now() - runtime.goalActivatedAt < SessionManager.goalActivationSettleMs
+  ) {
+    return false;
+  }
   if (!runtime.goalCheckPaneSnapshot) {
     return runtime.buffer.length > Math.max(0, runtime.goalCheckOffset);
   }
@@ -224,15 +504,105 @@ function sleepSync(ms: number): void {
   Atomics.wait(submitDelayArray, 0, 0, ms);
 }
 
-function nextEnabledGoalState(current: GoalState): GoalState {
-  switch (current) {
-    case "goal_satisfied":
-    case "manual_override_stopped":
-    case "failed_check":
-      return current;
-    default:
-      return "idle_waiting";
+function shouldFreezeGuardDecisionState(decisionState: GuardDecisionState): boolean {
+  return decisionState === "satisfied"
+    || decisionState === "manually_overridden"
+    || decisionState === "blocked_by_fatal_error"
+    || decisionState === "blocked_by_missing_verifier";
+}
+
+function nextEnabledGuardDecisionState(current: GuardDecisionState): GuardDecisionState {
+  if (shouldFreezeGuardDecisionState(current)) {
+    return current;
   }
+  return "waiting_for_idle";
+}
+
+function buildGoalSpec(goalConfig: GoalGuardConfig): GoalSpec {
+  return {
+    kind: "terminal_signal",
+    goalText: goalConfig.goalText,
+    successKeywords: [...goalConfig.successKeywords],
+  };
+}
+
+function buildVerificationSpec(goalConfig: GoalGuardConfig): VerificationSpec {
+  const raw = goalConfig.successCommand?.trim() || null;
+  const structured = raw ? parseStructuredVerifier(raw) : null;
+  return {
+    kind: structured?.kind ?? (raw ? "command_check" : "candidate_signal"),
+    raw,
+    command: structured ? null : raw,
+    required: true,
+    strict: Boolean(raw),
+  };
+}
+
+function parseStructuredVerifier(value: string): ParsedStructuredVerifier | null {
+  if (value.startsWith("file_exists:")) {
+    const targetPath = value.slice("file_exists:".length).trim();
+    if (!targetPath) {
+      return null;
+    }
+    return {
+      kind: "file_exists",
+      path: targetPath,
+    };
+  }
+
+  if (value.startsWith("file_contains:")) {
+    const payload = value.slice("file_contains:".length);
+    const separator = payload.indexOf("::");
+    if (separator <= 0) {
+      return null;
+    }
+    const targetPath = payload.slice(0, separator).trim();
+    const containsText = payload.slice(separator + 2);
+    if (!targetPath || !containsText) {
+      return null;
+    }
+    return {
+      kind: "file_contains",
+      path: targetPath,
+      containsText,
+    };
+  }
+
+  if (value.startsWith("json_equals:")) {
+    const payload = value.slice("json_equals:".length);
+    const parts = payload.split("::");
+    if (parts.length !== 3) {
+      return null;
+    }
+    const [targetPath, jsonPath, expectedRaw] = parts.map((item) => item.trim());
+    if (!targetPath || !jsonPath || !expectedRaw) {
+      return null;
+    }
+    try {
+      return {
+        kind: "json_field_equals",
+        path: targetPath,
+        jsonPath,
+        expectedValue: JSON.parse(expectedRaw),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function readJsonPathValue(input: unknown, dotPath: string): unknown {
+  const segments = dotPath.split(".").map((item) => item.trim()).filter(Boolean);
+  let current: unknown = input;
+  for (const segment of segments) {
+    if (!current || typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
 }
 
 const terminalFatalStopPatterns = [
@@ -256,7 +626,10 @@ const terminalFatalStopPatterns = [
 
 export class SessionManager extends EventEmitter {
   private readonly runtime = new Map<string, RuntimeState>();
+  private readonly codexObserver = new CodexObserver();
+  private readonly codexAppServerObserver = new CodexAppServerObserver();
   private static readonly viewportNoiseSuppressionMs = 2500;
+  static readonly goalActivationSettleMs = 7000;
 
   constructor(private readonly repository: SessionRepository) {
     super();
@@ -269,10 +642,15 @@ export class SessionManager extends EventEmitter {
       this.runtime.set(runtime.sessionId, {
         buffer: runtime.buffer,
         choiceOverlay: runtime.choiceOverlay,
+        goalActivatedAt: runtime.goalActivatedAt,
         lastAutoResumeAt: runtime.lastAutoResumeAt,
         autoResumeCount: runtime.autoResumeCount,
         lastInputAt: null,
         goalCheckOffset: runtime.goalCheckOffset,
+        goalCheckEventSeq: runtime.goalCheckEventSeq,
+        lastGuardPromptAt: runtime.lastGuardPromptAt,
+        lastGuardPromptText: runtime.lastGuardPromptText,
+        lastCapturedPane: runtime.lastCapturedPane,
         lastPaneSnapshot: runtime.lastPaneSnapshot,
         goalCheckPaneSnapshot: runtime.goalCheckPaneSnapshot,
         lastViewerActivityAt: null,
@@ -284,19 +662,17 @@ export class SessionManager extends EventEmitter {
     for (const session of this.repository.listSessions()) {
       const hasTmuxSession = this.hasTmuxSession(session.tmuxSessionName);
       const nextStatus: SessionStatus = hasTmuxSession ? "running" : "closed";
-      const nextGoalState =
-        session.goalState === "goal_satisfied" ||
-        session.goalState === "manual_override_stopped" ||
-        session.goalState === "failed_check"
-          ? session.goalState
-          : hasTmuxSession
-            ? session.goalConfig.enabled
-              ? "idle_waiting"
-              : "disabled"
-            : "manual_override_stopped";
+      const nextGuardDecisionState = shouldFreezeGuardDecisionState(session.guardDecisionState)
+        ? session.guardDecisionState
+        : hasTmuxSession
+          ? session.goalConfig.enabled
+            ? "waiting_for_idle"
+            : "disabled"
+          : "manually_overridden";
       this.repository.updateSession(session.id, {
         status: nextStatus,
-        goalState: nextGoalState,
+        guardDecisionState: nextGuardDecisionState,
+        guardDecisionReason: hasTmuxSession ? null : "tmux 会话不存在，已标记为手动终止态。",
       });
       if (hasTmuxSession) {
         this.refreshRuntimeFromTmux(session);
@@ -311,10 +687,15 @@ export class SessionManager extends EventEmitter {
       this.runtime.set(sessionId, {
         buffer: persisted?.buffer ?? fallback.buffer,
         choiceOverlay: persisted?.choiceOverlay ?? fallback.choiceOverlay,
+        goalActivatedAt: persisted?.goalActivatedAt ?? fallback.goalActivatedAt,
         lastAutoResumeAt: persisted?.lastAutoResumeAt ?? fallback.lastAutoResumeAt,
         autoResumeCount: persisted?.autoResumeCount ?? fallback.autoResumeCount,
         lastInputAt: null,
         goalCheckOffset: persisted?.goalCheckOffset ?? fallback.goalCheckOffset,
+        goalCheckEventSeq: persisted?.goalCheckEventSeq ?? fallback.goalCheckEventSeq,
+        lastGuardPromptAt: persisted?.lastGuardPromptAt ?? fallback.lastGuardPromptAt,
+        lastGuardPromptText: persisted?.lastGuardPromptText ?? fallback.lastGuardPromptText,
+        lastCapturedPane: persisted?.lastCapturedPane ?? fallback.lastCapturedPane,
         lastPaneSnapshot: persisted?.lastPaneSnapshot ?? fallback.lastPaneSnapshot,
         goalCheckPaneSnapshot: persisted?.goalCheckPaneSnapshot ?? fallback.goalCheckPaneSnapshot,
         lastViewerActivityAt: null,
@@ -328,9 +709,14 @@ export class SessionManager extends EventEmitter {
     this.repository.updateRuntimeState(sessionId, {
       buffer: runtime.buffer,
       choiceOverlay: runtime.choiceOverlay,
+      goalActivatedAt: runtime.goalActivatedAt,
       lastAutoResumeAt: runtime.lastAutoResumeAt,
       autoResumeCount: runtime.autoResumeCount,
       goalCheckOffset: runtime.goalCheckOffset,
+      goalCheckEventSeq: runtime.goalCheckEventSeq,
+      lastGuardPromptAt: runtime.lastGuardPromptAt,
+      lastGuardPromptText: runtime.lastGuardPromptText,
+      lastCapturedPane: runtime.lastCapturedPane,
       lastPaneSnapshot: runtime.lastPaneSnapshot,
       goalCheckPaneSnapshot: runtime.goalCheckPaneSnapshot,
     });
@@ -343,8 +729,206 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  private appendGuardEvent(
+    sessionId: string,
+    source: "terminal_output" | "user_input" | "guard_prompt" | "guard_echo",
+    text: string,
+  ): void {
+    const normalizedText = normalizeGuardEventText(text);
+    if (!normalizedText) {
+      return;
+    }
+    this.repository.appendGuardEvent(sessionId, source, text.slice(-4000), normalizedText);
+  }
+
+  private isLikelyGuardEchoEvent(runtime: RuntimeState, text: string): boolean {
+    if (
+      runtime.lastGuardPromptAt !== null &&
+      Date.now() - runtime.lastGuardPromptAt <= guardEchoWindowMs &&
+      runtime.lastGuardPromptText &&
+      isLikelyGuardEcho(runtime.lastGuardPromptText, text)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   private resolveSessionCwd(session: ManagedSessionRecord): string {
     return path.isAbsolute(session.cwd) ? session.cwd : normalizeInsideRoot(session.workspaceRoot, session.cwd);
+  }
+
+  private createTaskRunId(): string {
+    return `guardrun_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  private buildVerificationReceipt(
+    session: ManagedSessionRecord,
+    verificationSpec: VerificationSpec,
+    candidate: GoalVerificationCandidate,
+    passed: boolean,
+    detail: string,
+    exitCode: number | null,
+  ): VerificationReceipt {
+    return {
+      schema: "touchmux.goal_guard.result.v1",
+      taskRunId: session.currentTaskRunId ?? this.createTaskRunId(),
+      sessionId: session.id,
+      status: passed ? "success" : "failed",
+      verificationKind: verificationSpec.kind,
+      passed,
+      detail,
+      exitCode,
+      evidenceEventSeq: candidate.eventSeq,
+      createdAt: Date.now(),
+    };
+  }
+
+  private verifyGoalCandidate(session: ManagedSessionRecord, candidate: GoalVerificationCandidate): {
+    passed: boolean;
+    receipt: VerificationReceipt;
+    successEvidence: SuccessEvidence | null;
+    previewText: string;
+  } {
+    const verificationSpec = session.verificationSpec ?? buildVerificationSpec(session.goalConfig);
+    const structured = verificationSpec.raw ? parseStructuredVerifier(verificationSpec.raw) : null;
+
+    if (structured?.kind === "file_exists" && structured.path) {
+      const targetPath = path.isAbsolute(structured.path)
+        ? structured.path
+        : path.join(this.resolveSessionCwd(session), structured.path);
+      const passed = fs.existsSync(targetPath);
+      const detail = passed
+        ? `文件存在校验通过：${structured.path}，taskRunId=${session.currentTaskRunId ?? "unknown"}。`
+        : `文件存在校验未通过：${structured.path}，taskRunId=${session.currentTaskRunId ?? "unknown"}。`;
+      const receipt = this.buildVerificationReceipt(session, verificationSpec, candidate, passed, detail, passed ? 0 : 1);
+      return {
+        passed,
+        receipt,
+        successEvidence: passed
+          ? {
+              kind: "command_check",
+              eventSeq: candidate.eventSeq,
+              confirmedAt: receipt.createdAt,
+              detail,
+            }
+          : null,
+        previewText: summarizeTerminalText([session.lastOutputPreview, detail].filter(Boolean).join(" ")),
+      };
+    }
+
+    if (structured?.kind === "file_contains" && structured.path && structured.containsText) {
+      const targetPath = path.isAbsolute(structured.path)
+        ? structured.path
+        : path.join(this.resolveSessionCwd(session), structured.path);
+      const content = fs.existsSync(targetPath) ? fs.readFileSync(targetPath, "utf8") : "";
+      const passed = content.includes(structured.containsText);
+      const detail = passed
+        ? `文件包含校验通过：${structured.path}，taskRunId=${session.currentTaskRunId ?? "unknown"}。`
+        : `文件包含校验未通过：${structured.path}，taskRunId=${session.currentTaskRunId ?? "unknown"}。`;
+      const receipt = this.buildVerificationReceipt(session, verificationSpec, candidate, passed, detail, passed ? 0 : 1);
+      return {
+        passed,
+        receipt,
+        successEvidence: passed
+          ? {
+              kind: "command_check",
+              eventSeq: candidate.eventSeq,
+              confirmedAt: receipt.createdAt,
+              detail,
+            }
+          : null,
+        previewText: summarizeTerminalText([session.lastOutputPreview, detail].filter(Boolean).join(" ")),
+      };
+    }
+
+    if (structured?.kind === "json_field_equals" && structured.path && structured.jsonPath) {
+      const targetPath = path.isAbsolute(structured.path)
+        ? structured.path
+        : path.join(this.resolveSessionCwd(session), structured.path);
+      let parsedJson: unknown = null;
+      try {
+        parsedJson = JSON.parse(fs.readFileSync(targetPath, "utf8"));
+      } catch {
+        parsedJson = null;
+      }
+      const actualValue = parsedJson === null ? undefined : readJsonPathValue(parsedJson, structured.jsonPath);
+      const passed = JSON.stringify(actualValue) === JSON.stringify(structured.expectedValue);
+      const detail = passed
+        ? `JSON 字段校验通过：${structured.path}#${structured.jsonPath}，taskRunId=${session.currentTaskRunId ?? "unknown"}。`
+        : `JSON 字段校验未通过：${structured.path}#${structured.jsonPath}，taskRunId=${session.currentTaskRunId ?? "unknown"}。`;
+      const receipt = this.buildVerificationReceipt(session, verificationSpec, candidate, passed, detail, passed ? 0 : 1);
+      return {
+        passed,
+        receipt,
+        successEvidence: passed
+          ? {
+              kind: "command_check",
+              eventSeq: candidate.eventSeq,
+              confirmedAt: receipt.createdAt,
+              detail,
+            }
+          : null,
+        previewText: summarizeTerminalText([session.lastOutputPreview, detail].filter(Boolean).join(" ")),
+      };
+    }
+
+    if (verificationSpec.kind === "command_check" && verificationSpec.command) {
+      const result = spawnSync(config.shell, ["-lc", verificationSpec.command], {
+        cwd: this.resolveSessionCwd(session),
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+      const passed = result.status === 0;
+      const detail = passed
+        ? `命令校验通过，taskRunId=${session.currentTaskRunId ?? "unknown"}。`
+        : `命令校验未通过，taskRunId=${session.currentTaskRunId ?? "unknown"}，exit=${result.status ?? "null"}。`;
+      const receipt = this.buildVerificationReceipt(
+        session,
+        verificationSpec,
+        candidate,
+        passed,
+        detail,
+        result.status ?? null,
+      );
+      return {
+        passed,
+        receipt,
+        successEvidence: passed
+          ? {
+              kind: "command_check",
+              eventSeq: candidate.eventSeq,
+              confirmedAt: receipt.createdAt,
+              detail,
+            }
+          : null,
+        previewText: summarizeTerminalText([session.lastOutputPreview, result.stdout, result.stderr].filter(Boolean).join(" ")),
+      };
+    }
+
+    if (!verificationSpec.strict) {
+      const detail = `检测到候选完成信号，但当前 taskRunId=${session.currentTaskRunId ?? "unknown"} 未配置严格 verifier，拒绝自动确认成功。`;
+      const receipt = this.buildVerificationReceipt(session, verificationSpec, candidate, false, detail, null);
+      return {
+        passed: false,
+        receipt,
+        successEvidence: null,
+        previewText: session.lastOutputPreview,
+      };
+    }
+
+    const detail = `${candidate.detail} 当前 taskRunId=${session.currentTaskRunId ?? "unknown"}。`;
+    const receipt = this.buildVerificationReceipt(session, verificationSpec, candidate, true, detail, null);
+    return {
+      passed: true,
+      receipt,
+      successEvidence: {
+        kind: candidate.kind,
+        eventSeq: candidate.eventSeq,
+        confirmedAt: receipt.createdAt,
+        detail,
+      },
+      previewText: session.lastOutputPreview,
+    };
   }
 
   private relativeSessionCwd(session: ManagedSessionRecord): string {
@@ -358,8 +942,9 @@ export class SessionManager extends EventEmitter {
     const baseArgs = [...config.codexArgs];
     const envPrefix = [
       "env",
-      `HOME=${config.sessionHome}`,
+      `HOME=${config.runtimeHome}`,
       `TOUCHMUX_SESSION_HOME=${config.sessionHome}`,
+      `CODEX_HOME=${config.codexHomeDir}`,
       ...(process.env.PATH ? [`PATH=${process.env.PATH}`] : []),
     ];
     if (input.mode === "new") {
@@ -427,26 +1012,45 @@ export class SessionManager extends EventEmitter {
     }
     const runtime = this.getRuntime(session.id);
     const previousBuffer = runtime.buffer;
+    const previousCapturedPane = runtime.lastCapturedPane;
     const nextPaneSnapshot = buildPaneSnapshot(captured);
     const paneChanged = nextPaneSnapshot !== runtime.lastPaneSnapshot;
     const suppressViewportNoise =
       paneChanged &&
       runtime.lastViewerActivityAt !== null &&
       Date.now() - runtime.lastViewerActivityAt < SessionManager.viewportNoiseSuppressionMs;
-    runtime.buffer = mergeRuntimeBuffer(runtime.buffer, captured);
+    const paneDelta = extractIncrementalPaneDelta(previousCapturedPane, captured);
+    const likelyGuardEcho = paneDelta ? this.isLikelyGuardEchoEvent(runtime, paneDelta) : false;
+    const meaningfulTerminalDelta = paneDelta && !likelyGuardEcho && hasMeaningfulTerminalDelta(paneDelta);
+    if (paneDelta) {
+      runtime.buffer = appendIncrementalOutput(runtime.buffer, paneDelta);
+      this.appendGuardEvent(session.id, "terminal_output", paneDelta);
+      if (likelyGuardEcho) {
+        this.appendGuardEvent(session.id, "guard_echo", paneDelta);
+      }
+    }
+    runtime.lastCapturedPane = captured;
     runtime.lastPaneSnapshot = nextPaneSnapshot;
     runtime.choiceOverlay = detectChoiceOverlay(runtime.buffer);
     this.persistRuntime(session.id);
     const nextPreview = summarizeTerminalText(runtime.buffer);
-    const changes: Partial<Pick<ManagedSessionRecord, "status" | "lastOutputAt" | "lastOutputPreview" | "goalState">> & {
-      updatedAt?: number;
-    } = {};
+    const changes: Partial<
+      Pick<
+        ManagedSessionRecord,
+        "status" | "lastOutputAt" | "lastOutputPreview" | "guardDecisionState" | "guardDecisionReason"
+      >
+    > & { updatedAt?: number } = {};
     const bufferChanged = runtime.buffer !== previousBuffer;
-    if (paneChanged && !suppressViewportNoise) {
+    if (meaningfulTerminalDelta && !suppressViewportNoise) {
       changes.lastOutputAt = Date.now();
-      changes.status = session.goalState === "goal_satisfied" ? "goal_satisfied" : "running";
-      if (session.goalConfig.enabled && session.goalState !== "goal_satisfied") {
-        changes.goalState = hasNewOutputSinceGoalCheckpoint(runtime) ? "running" : "idle_waiting";
+      changes.status = "running";
+      if (session.goalConfig.enabled && !shouldFreezeGuardDecisionState(session.guardDecisionState)) {
+        const outputReduction = reduceGoalGuardOutputActivity(
+          hasNewOutputSinceGoalCheckpoint(runtime),
+          "terminal_fallback",
+        );
+        changes.guardDecisionState = outputReduction.nextState;
+        changes.guardDecisionReason = outputReduction.reason;
       }
     }
     if (nextPreview && nextPreview !== session.lastOutputPreview) {
@@ -479,9 +1083,11 @@ export class SessionManager extends EventEmitter {
       "-c",
       absoluteCwd,
       "-e",
-      `HOME=${config.sessionHome}`,
+      `HOME=${config.runtimeHome}`,
       "-e",
       `TOUCHMUX_SESSION_HOME=${config.sessionHome}`,
+      "-e",
+      `CODEX_HOME=${config.codexHomeDir}`,
       ...(process.env.PATH ? ["-e", `PATH=${process.env.PATH}`] : []),
     ]);
     this.sendLiteral(tmuxSessionName, command, true);
@@ -491,6 +1097,7 @@ export class SessionManager extends EventEmitter {
       nodeId: config.localNode.id,
       title: input.title.trim() || `会话 ${sessionId.slice(0, 6)}`,
       mode: input.mode,
+      executionChannel: "tmux_local_tui",
       status: "running",
       cwd: relativeCwd,
       workspaceRoot: input.workspaceRoot,
@@ -573,8 +1180,9 @@ export class SessionManager extends EventEmitter {
       cwd: this.resolveSessionCwd(session),
       env: {
         ...process.env,
-        HOME: config.sessionHome,
+        HOME: config.runtimeHome,
         TOUCHMUX_SESSION_HOME: config.sessionHome,
+        CODEX_HOME: config.codexHomeDir,
         TERM: "xterm-256color",
       },
     });
@@ -605,32 +1213,45 @@ export class SessionManager extends EventEmitter {
     }
     const runtime = this.getRuntime(sessionId);
     runtime.buffer = `${runtime.buffer}${chunk}`.slice(-30000);
+    this.appendGuardEvent(sessionId, "terminal_output", chunk);
+    if (this.isLikelyGuardEchoEvent(runtime, chunk)) {
+      this.appendGuardEvent(sessionId, "guard_echo", chunk);
+    }
     runtime.lastPaneSnapshot = buildPaneSnapshot(runtime.buffer);
     runtime.choiceOverlay = detectChoiceOverlay(runtime.buffer);
     this.persistRuntime(sessionId);
     const updated = this.repository.updateSession(sessionId, {
-      status: session.goalState === "goal_satisfied" ? "goal_satisfied" : "running",
+      status: "running",
       lastOutputAt: Date.now(),
       lastOutputPreview: summarizeTerminalText(runtime.buffer),
-      goalState:
-        session.goalState === "goal_satisfied"
-          ? "goal_satisfied"
-          : session.goalConfig.enabled
-            ? hasNewOutputSinceGoalCheckpoint(runtime)
-              ? "running"
-              : "idle_waiting"
-            : "disabled",
+      guardDecisionState: shouldFreezeGuardDecisionState(session.guardDecisionState)
+        ? session.guardDecisionState
+        : session.goalConfig.enabled
+          ? hasNewOutputSinceGoalCheckpoint(runtime)
+            ? "observing_output"
+            : "waiting_for_idle"
+          : "disabled",
+      guardDecisionReason: shouldFreezeGuardDecisionState(session.guardDecisionState)
+        ? session.guardDecisionReason
+        : session.goalConfig.enabled
+          ? hasNewOutputSinceGoalCheckpoint(runtime)
+            ? "守卫在 checkpoint 之后观测到新的终端输出。"
+            : "守卫正在等待新的终端输出或空闲窗口。"
+          : null,
     });
     this.emit("session-updated", this.toSummary(updated));
   }
 
-  noteInputActivity(sessionId: string): void {
+  noteInputActivity(sessionId: string, inputText?: string): void {
     const session = this.repository.getSession(sessionId);
     if (!session) {
       return;
     }
     const runtime = this.getRuntime(sessionId);
     runtime.lastInputAt = Date.now();
+    if (typeof inputText === "string" && inputText.length > 0) {
+      this.appendGuardEvent(sessionId, "user_input", inputText);
+    }
   }
 
   getLastActivityAt(sessionId: string): number | null {
@@ -651,7 +1272,135 @@ export class SessionManager extends EventEmitter {
     return this.getRuntime(sessionId).buffer;
   }
 
-  getGoalDebugInfo(sessionId: string): GoalGuardDebugInfo | null {
+  async buildGoalGuardStateSnapshot(sessionId: string): Promise<GoalGuardStateSnapshot> {
+    const session = this.repository.getSession(sessionId);
+    if (!session) {
+      throw new Error("会话不存在");
+    }
+    const runtime = this.getRuntime(sessionId);
+    const codexObservation = await this.inspectCodexSession(sessionId);
+    const candidateEvents = this.repository.listGuardEventsSince(sessionId, runtime.goalCheckEventSeq, "terminal_output");
+    const terminalDiagnostics = toTerminalGoalCandidateDiagnostics(
+      getGoalMatchDiagnosticsFromEvents(candidateEvents, session.goalConfig, runtime.lastGuardPromptText),
+    );
+    const guardActivatedAt = runtime.goalActivatedAt ?? session.createdAt;
+    const hasBootstrapped = runtime.autoResumeCount > 0;
+    const terminalActivityAt = this.getLastActivityAt(sessionId) ?? session.createdAt;
+    const structuredActivityAt = codexObservation.lastEventAt;
+    const observedActivityAt = Math.max(terminalActivityAt, structuredActivityAt ?? 0, session.createdAt);
+    const allowTerminalSignals = session.executionChannel === "tmux_local_tui";
+    const appServerNotificationSummary = codexAppServerNotificationCache.getThreadSummary(codexObservation.matchedSessionId);
+    const appServerNotificationManagerSummary = getCodexAppServerNotificationManagerSummary();
+    const appServerThreadManagerSummary = codexAppServerThreadCache.getThreadManagerSummary(codexObservation.matchedSessionId);
+    const appServerDebugSummary = buildAppServerDebugSummary(
+      codexObservation,
+      appServerNotificationManagerSummary,
+      appServerNotificationSummary,
+      appServerThreadManagerSummary,
+    );
+    return {
+      session,
+      codexObservation,
+      terminalDiagnostics,
+      hasKeywordRule: session.goalConfig.successKeywords.length > 0,
+      verificationKind: session.verificationSpec?.kind ?? "candidate_signal",
+      allowTerminalSignals,
+      progressSignal: resolveProgressSignal(codexObservation, allowTerminalSignals, terminalDiagnostics),
+      structuredFactSource: resolveStructuredFactSource(session, codexObservation, appServerNotificationSummary),
+      appServerNotificationSummary,
+      appServerNotificationManagerSummary,
+      appServerDebugSummary,
+      terminalActivityAt,
+      structuredActivityAt,
+      withinActivationSettleWindow: Date.now() - guardActivatedAt < SessionManager.goalActivationSettleMs,
+      reachedFirstProbeDelay: Date.now() - guardActivatedAt >= goalGuardFirstProbeDelayMs,
+      hasBootstrapped,
+      hasRecentOutput: Date.now() - observedActivityAt < goalGuardRunningCooldownMs,
+      idleTimedOut: Date.now() - observedActivityAt >= session.goalConfig.idleTimeoutSec * 1000,
+      hasTmuxSession: this.hasTmuxSession(session.tmuxSessionName),
+      observedActivityAt,
+      appServerThreadManagerSummary,
+    };
+  }
+
+  async inspectCodexSession(sessionId: string): Promise<CodexObservation> {
+    const session = this.repository.getSession(sessionId);
+    if (!session) {
+      throw new Error("会话不存在");
+    }
+    const runtime = this.getRuntime(sessionId);
+    const inspectOptions = {
+      sinceTimestamp: runtime.goalActivatedAt ?? session.createdAt,
+      goalConfig: session.goalConfig,
+    };
+    const observation = await (session.executionChannel === "app_server_remote_tui"
+      ? this.codexAppServerObserver.inspectSession(session, inspectOptions)
+      : (() => {
+          const rolloutObservation = this.codexObserver.inspectSession(session, inspectOptions);
+          return rolloutObservation.available
+            ? Promise.resolve(rolloutObservation)
+            : this.codexAppServerObserver.inspectSession(session, inspectOptions);
+        })());
+    if (
+      observation.available &&
+      observation.matchedSessionId &&
+      observation.matchedSessionId !== session.currentCodexSessionId
+    ) {
+      this.repository.updateSession(sessionId, {
+        currentCodexSessionId: observation.matchedSessionId,
+      });
+    }
+    return observation;
+  }
+
+  async probeAppServerBridge(sessionId: string): Promise<AppServerBridgeProbeResult> {
+    const session = this.repository.getSession(sessionId);
+    if (!session) {
+      throw new Error("会话不存在");
+    }
+    if (session.executionChannel !== "tmux_local_tui") {
+      throw new Error("当前只有 tmux_local_tui 会话支持 app-server bridge probe");
+    }
+    const cwd = this.resolveSessionCwd(session);
+    const currentCodexSessionIdBefore = session.currentCodexSessionId;
+    const client = new CodexAppServerProbeClient();
+    try {
+      await client.initialize({
+        clientInfo: {
+          name: "touchmux-bridge-probe",
+          version: "0.1.0",
+          title: "TouchMux Bridge Probe",
+        },
+        capabilities: {
+          experimentalApi: true,
+        },
+      });
+      const threadStart = await client.startThread({
+        cwd,
+        approvalPolicy: "never",
+        sandbox: "workspace-write",
+        ephemeral: true,
+      });
+      const threadRead = await client.readThread(threadStart.threadId);
+      const currentCodexSessionIdAfter = this.repository.getSession(sessionId)?.currentCodexSessionId ?? null;
+      return {
+        sessionId,
+        executionChannel: session.executionChannel,
+        cwd,
+        startedThreadId: threadStart.threadId,
+        threadReadId: threadRead.threadId,
+        threadReadCwd: threadRead.cwd,
+        model: threadStart.model,
+        currentCodexSessionIdBefore,
+        currentCodexSessionIdAfter,
+        currentCodexSessionIdUnchanged: currentCodexSessionIdBefore === currentCodexSessionIdAfter,
+      };
+    } finally {
+      await client.disconnect();
+    }
+  }
+
+  async getGoalDebugInfo(sessionId: string): Promise<GoalGuardDebugInfo | null> {
     const session = this.repository.getSession(sessionId);
     if (!session) {
       return null;
@@ -666,6 +1415,8 @@ export class SessionManager extends EventEmitter {
     const runtime = this.getRuntime(sessionId);
     const goalWindow = this.getGoalWindowOutput(sessionId);
     const diagnostics = getGoalMatchDiagnostics(goalWindow, refreshedSession.goalConfig);
+    const snapshot = await this.buildGoalGuardStateSnapshot(sessionId);
+    const codexObservation = snapshot.codexObservation;
     const baselineTailLines = tailNonEmptyLines(runtime.goalCheckPaneSnapshot, 16);
     const currentTailLines = tailNonEmptyLines(runtime.lastPaneSnapshot, 16);
     const goalWindowTailLines = tailNonEmptyLines(goalWindow, 24);
@@ -686,9 +1437,22 @@ export class SessionManager extends EventEmitter {
     return {
       sessionId,
       goalState: refreshedSession.goalState,
+      guardDecisionState: refreshedSession.guardDecisionState,
+      guardDecisionReason: refreshedSession.guardDecisionReason,
+      currentTaskRunId: refreshedSession.currentTaskRunId,
       guardEnabled: refreshedSession.goalConfig.enabled,
       hasTmuxSession: this.hasTmuxSession(refreshedSession.tmuxSessionName),
+      goalActivatedAt: runtime.goalActivatedAt,
       lastOutputAt: refreshedSession.lastOutputAt,
+      structuredLastEventAt: snapshot.structuredActivityAt,
+      observedActivityAt: snapshot.observedActivityAt,
+      progressSignal: snapshot.progressSignal,
+      structuredFactSource: snapshot.structuredFactSource,
+      terminalSignalsAllowed: snapshot.allowTerminalSignals,
+      appServerNotificationSummary: snapshot.appServerNotificationSummary,
+      appServerNotificationManagerSummary: snapshot.appServerNotificationManagerSummary,
+      appServerThreadManagerSummary: snapshot.appServerThreadManagerSummary,
+      appServerDebugSummary: snapshot.appServerDebugSummary,
       lastAutoResumeAt: runtime.lastAutoResumeAt,
       lastViewerActivityAt: runtime.lastViewerActivityAt,
       autoResumeCount: runtime.autoResumeCount,
@@ -703,27 +1467,21 @@ export class SessionManager extends EventEmitter {
       matchedStandaloneSuccess: diagnostics.matchedStandaloneSuccess,
       matchedIncompleteSignals: diagnostics.matchedIncompleteSignals,
       changedTailLines,
+      goalSpec: refreshedSession.goalSpec,
+      verificationSpec: refreshedSession.verificationSpec,
+      verificationReceipt: refreshedSession.verificationReceipt,
+      recentEvents: this.repository.listRecentGuardEvents(sessionId, 20),
+      successEvidence: refreshedSession.successEvidence,
+      codexObservation,
     };
   }
 
   reconcileGoalSatisfiedState(sessionId: string): SessionSummary | null {
     const session = this.repository.getSession(sessionId);
-    if (!session || !session.goalConfig.enabled || session.goalState !== "goal_satisfied") {
+    if (!session || !session.goalConfig.enabled || session.guardDecisionState !== "satisfied") {
       return session ? this.toSummary(session) : null;
     }
-    const diagnostics = getGoalMatchDiagnostics(this.getGoalWindowOutput(sessionId), session.goalConfig);
-    const stillMatchesSuccess =
-      (diagnostics.matchedStandaloneSuccess || diagnostics.matchedSuccessKeyword !== null) &&
-      diagnostics.matchedIncompleteSignals.length === 0;
-    if (stillMatchesSuccess) {
-      return this.toSummary(session);
-    }
-    const updated = this.repository.updateSession(sessionId, {
-      status: "running",
-      goalState: "idle_waiting",
-    });
-    this.emitSession(sessionId);
-    return this.toSummary(updated);
+    return this.toSummary(session);
   }
 
   detectFatalGuardStop(sessionId: string): string | null {
@@ -737,14 +1495,33 @@ export class SessionManager extends EventEmitter {
     return null;
   }
 
+  async detectCodexFatalGuardStop(sessionId: string): Promise<string | null> {
+    const observation = await this.inspectCodexSession(sessionId);
+    return observation.fatalError;
+  }
+
+  markGuardObservingCodexTurn(sessionId: string, detail: string): SessionSummary {
+    const session = this.repository.getSession(sessionId);
+    if (!session) {
+      throw new Error("会话不存在");
+    }
+    const updated = this.repository.updateSession(sessionId, {
+      guardDecisionState: "observing_codex_turn",
+      guardDecisionReason: detail,
+    });
+    this.emitSession(sessionId);
+    return this.toSummary(updated);
+  }
+
   markGuardFailed(sessionId: string, reason: string): SessionSummary {
     const session = this.repository.getSession(sessionId);
     if (!session) {
       throw new Error("会话不存在");
     }
     const updated = this.repository.updateSession(sessionId, {
-      status: "failed_check",
-      goalState: "failed_check",
+      status: session.status === "closed" ? "closed" : "running",
+      guardDecisionState: "blocked_by_fatal_error",
+      guardDecisionReason: reason,
       lastOutputPreview: summarizeTerminalText([session.lastOutputPreview, reason].filter(Boolean).join(" ")),
     });
     this.repository.logAudit("goal.failed_check", { reason }, sessionId);
@@ -752,13 +1529,14 @@ export class SessionManager extends EventEmitter {
     return this.toSummary(updated);
   }
 
-  markGuardWaiting(sessionId: string): SessionSummary {
+  markGuardWaiting(sessionId: string, reason?: string | null): SessionSummary {
     const session = this.repository.getSession(sessionId);
     if (!session) {
       throw new Error("会话不存在");
     }
     const updated = this.repository.updateSession(sessionId, {
-      goalState: "idle_waiting",
+      guardDecisionState: "waiting_for_idle",
+      guardDecisionReason: reason ?? "守卫正在等待新的有效进展信号或下一个空闲窗口。",
     });
     this.emitSession(sessionId);
     return this.toSummary(updated);
@@ -820,12 +1598,12 @@ export class SessionManager extends EventEmitter {
     if (!session) {
       throw new Error("会话不存在");
     }
-    if (session.goalConfig.enabled && session.goalState !== "goal_satisfied" && !force) {
+    if (session.goalConfig.enabled && session.guardDecisionState !== "satisfied" && !force) {
       throw new Error("目标尚未达成，普通停止已被 goal guard 阻止");
     }
     if (
       session.goalConfig.enabled &&
-      session.goalState === "goal_satisfied" &&
+      session.guardDecisionState === "satisfied" &&
       !session.goalConfig.allowManualStopAfterSuccess &&
       !force
     ) {
@@ -834,16 +1612,17 @@ export class SessionManager extends EventEmitter {
     if (this.hasTmuxSession(session.tmuxSessionName)) {
       this.runTmux(["kill-session", "-t", session.tmuxSessionName]);
     }
-    const goalState = force
-      ? "manual_override_stopped"
-      : session.goalState === "goal_satisfied"
-        ? "goal_satisfied"
+    const nextGuardDecisionState = force
+      ? "manually_overridden"
+      : session.guardDecisionState === "satisfied"
+        ? "satisfied"
         : session.goalConfig.enabled
-          ? "manual_override_stopped"
+          ? "manually_overridden"
           : "disabled";
     const updated = this.repository.updateSession(sessionId, {
       status: "closed",
-      goalState,
+      guardDecisionState: nextGuardDecisionState,
+      guardDecisionReason: force ? "会话被强制停止。" : "会话已关闭，守卫停止继续接管。",
     });
     this.repository.logAudit("session.closed", { force }, sessionId);
     this.emitSession(sessionId);
@@ -861,37 +1640,47 @@ export class SessionManager extends EventEmitter {
       currentSession = refreshed.session;
     }
     const runtime = this.getRuntime(sessionId);
-    const preEnableDiagnostics = goalConfig.enabled ? getGoalMatchDiagnostics(runtime.buffer, goalConfig) : null;
-    const hasPreExistingSuccess =
-      goalConfig.enabled &&
-      preEnableDiagnostics !== null &&
-      (preEnableDiagnostics.matchedStandaloneSuccess || preEnableDiagnostics.matchedSuccessKeyword !== null) &&
-      preEnableDiagnostics.matchedIncompleteSignals.length === 0;
+    const preserveSatisfiedState =
+      goalConfig.enabled && currentSession.goalConfig.enabled && currentSession.guardDecisionState === "satisfied";
+    const nextTaskRunId = goalConfig.enabled
+      ? preserveSatisfiedState
+        ? currentSession.currentTaskRunId
+        : this.createTaskRunId()
+      : null;
+    const nextGoalSpec = goalConfig.enabled ? buildGoalSpec(goalConfig) : null;
+    const nextVerificationSpec = goalConfig.enabled ? buildVerificationSpec(goalConfig) : null;
+    runtime.goalActivatedAt = goalConfig.enabled ? Date.now() : null;
     runtime.goalCheckOffset = goalConfig.enabled ? runtime.buffer.length : 0;
+    runtime.goalCheckEventSeq = goalConfig.enabled ? this.repository.getLastGuardEventSeq(sessionId) : 0;
     runtime.goalCheckPaneSnapshot = goalConfig.enabled ? runtime.lastPaneSnapshot : "";
     this.persistRuntime(sessionId);
     const shouldResetTerminalGoalState =
       goalConfig.enabled &&
       (!currentSession.goalConfig.enabled ||
-        currentSession.goalState === "goal_satisfied" ||
-        currentSession.goalState === "failed_check" ||
-        currentSession.goalState === "manual_override_stopped");
+        currentSession.guardDecisionState === "satisfied" ||
+        currentSession.guardDecisionState === "blocked_by_missing_verifier" ||
+        currentSession.guardDecisionState === "blocked_by_fatal_error" ||
+        currentSession.guardDecisionState === "manually_overridden");
     const updated = this.repository.updateSession(sessionId, {
       goalConfig,
-      status: goalConfig.enabled
-        ? hasPreExistingSuccess
-          ? "goal_satisfied"
-          : this.hasTmuxSession(currentSession.tmuxSessionName)
-            ? "running"
-            : currentSession.status
-        : currentSession.status,
-      goalState: goalConfig.enabled
-        ? hasPreExistingSuccess
-          ? "goal_satisfied"
+      status: currentSession.status,
+      guardDecisionState: goalConfig.enabled
+        ? preserveSatisfiedState
+          ? "satisfied"
           : shouldResetTerminalGoalState
-            ? "idle_waiting"
-            : nextEnabledGoalState(currentSession.goalState)
+            ? "waiting_for_idle"
+            : nextEnabledGuardDecisionState(currentSession.guardDecisionState)
         : "disabled",
+      guardDecisionReason: goalConfig.enabled
+        ? preserveSatisfiedState
+          ? "守卫配置更新后保留已确认的成功状态。"
+          : "守卫配置已更新，当前进入等待观察状态。"
+        : "守卫已停止，仅保留配置。",
+      currentTaskRunId: nextTaskRunId,
+      goalSpec: nextGoalSpec,
+      verificationSpec: nextVerificationSpec,
+      verificationReceipt: goalConfig.enabled ? (preserveSatisfiedState ? currentSession.verificationReceipt : null) : null,
+      successEvidence: goalConfig.enabled ? (preserveSatisfiedState ? currentSession.successEvidence : null) : currentSession.successEvidence,
     });
     this.repository.logAudit("goal.updated", goalConfig, sessionId);
     this.emitSession(sessionId);
@@ -899,54 +1688,70 @@ export class SessionManager extends EventEmitter {
   }
 
   async evaluateGoal(sessionId: string): Promise<boolean> {
-    const session = this.repository.getSession(sessionId);
+    let session = this.repository.getSession(sessionId);
     if (!session || !session.goalConfig.enabled) {
       return false;
     }
-    if (session.goalState === "goal_satisfied") {
-      return true;
-    }
-    const buffer = this.getGoalWindowOutput(sessionId);
-    const hasKeywordRule = session.goalConfig.successKeywords.length > 0;
-    const hasCommandRule = Boolean(session.goalConfig.successCommand?.trim());
-    const diagnostics = getGoalMatchDiagnostics(buffer, session.goalConfig);
-    if (!diagnostics.matchedStandaloneSuccess && diagnostics.matchedIncompleteSignals.length > 0) {
-      return false;
-    }
-    if (!hasKeywordRule && !hasCommandRule && !diagnostics.matchedStandaloneSuccess) {
-      return false;
-    }
-    const keywordMatched =
-      diagnostics.matchedStandaloneSuccess ||
-      !hasKeywordRule ||
-      diagnostics.matchedSuccessKeyword !== null;
-    if (!keywordMatched) {
-      return false;
-    }
-    if (!hasCommandRule) {
-      this.repository.updateSession(sessionId, {
-        status: "goal_satisfied",
-        goalState: "goal_satisfied",
+    if (!session.currentTaskRunId || !session.goalSpec || !session.verificationSpec) {
+      session = this.repository.updateSession(sessionId, {
+        currentTaskRunId: session.currentTaskRunId ?? this.createTaskRunId(),
+        goalSpec: session.goalSpec ?? buildGoalSpec(session.goalConfig),
+        verificationSpec: session.verificationSpec ?? buildVerificationSpec(session.goalConfig),
       });
-      this.emitSession(sessionId);
+    }
+    if (session.guardDecisionState === "satisfied") {
       return true;
     }
-    const result = spawnSync(config.shell, ["-lc", session.goalConfig.successCommand!], {
-      cwd: this.resolveSessionCwd(session),
-      stdio: "pipe",
-      encoding: "utf8",
+    const snapshot = await this.buildGoalGuardStateSnapshot(sessionId);
+    const verificationSpec = session.verificationSpec ?? buildVerificationSpec(session.goalConfig);
+    let candidate: GoalVerificationCandidate | null = null;
+    const reduction = reduceGoalGuardEvents({
+      codexObservation: snapshot.codexObservation,
+      terminalDiagnostics: snapshot.terminalDiagnostics,
+      hasKeywordRule: snapshot.hasKeywordRule,
+      verificationKind: snapshot.verificationKind,
+      allowTerminalSignals: snapshot.allowTerminalSignals,
     });
-    const nextState = result.status === 0 ? "goal_satisfied" : "failed_check";
+    if (reduction.nextState === "observing_codex_turn") {
+      return false;
+    }
+    if (reduction.candidate) {
+      candidate = {
+        kind: reduction.candidate.kind,
+        source: reduction.candidate.source,
+        eventSeq: reduction.candidate.eventSeq,
+        detail: reduction.candidate.detail,
+      };
+    }
+
+    if (!candidate) {
+      return false;
+    }
+
     this.repository.updateSession(sessionId, {
-      status: result.status === 0 ? "goal_satisfied" : session.status,
-      goalState: nextState,
-      lastOutputPreview: summarizeTerminalText([session.lastOutputPreview, result.stdout, result.stderr].filter(Boolean).join(" ")),
+      status: session.status === "closed" ? "closed" : "running",
+      guardDecisionState: "verifying",
+      guardDecisionReason: `${candidate.detail} taskRunId=${session.currentTaskRunId ?? "unknown"}`,
     });
     this.emitSession(sessionId);
-    return result.status === 0;
+
+    const verification = this.verifyGoalCandidate(session, candidate);
+    const verificationReduction = reduceGoalGuardVerificationResult(verification.receipt);
+    this.repository.updateSession(sessionId, {
+      status: session.status === "closed" ? "closed" : "running",
+      guardDecisionState: verificationReduction.nextState,
+      guardDecisionReason: verificationReduction.reason,
+      verificationReceipt: verification.receipt,
+      successEvidence: verificationReduction.keepPreviousSuccessEvidence
+        ? session.successEvidence
+        : verification.successEvidence,
+      lastOutputPreview: verification.previewText,
+    });
+    this.emitSession(sessionId);
+    return verification.passed;
   }
 
-  autoResume(sessionId: string): SessionSummary {
+  autoResume(sessionId: string, reason?: string | null): SessionSummary {
     const session = this.repository.getSession(sessionId);
     if (!session) {
       throw new Error("会话不存在");
@@ -965,9 +1770,14 @@ export class SessionManager extends EventEmitter {
       .filter((item): item is string => Boolean(item))
       .join("；");
     this.sendLiteral(session.tmuxSessionName, prompt, true);
+    runtime.lastGuardPromptAt = runtime.lastAutoResumeAt;
+    runtime.lastGuardPromptText = prompt;
+    this.persistRuntime(sessionId);
+    this.appendGuardEvent(sessionId, "guard_prompt", prompt);
     const updated = this.repository.updateSession(sessionId, {
-      status: "auto_resuming",
-      goalState: "auto_resuming",
+      status: session.status === "closed" ? "closed" : "running",
+      guardDecisionState: "resuming",
+      guardDecisionReason: reason ?? "守卫已向终端注入续跑提示，等待新的有效进展信号。",
       lastOutputAt: runtime.lastAutoResumeAt,
     });
     this.repository.logAudit("goal.auto_resume", { prompt }, sessionId);
