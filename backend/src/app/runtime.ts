@@ -6,6 +6,7 @@ import { FileService } from "../services/fileService.js";
 import { CodexAppServerNotificationManager } from "../services/codexAppServerNotificationManager.js";
 import { CodexAppServerThreadManager } from "../services/codexAppServerThreadManager.js";
 import { GoalGuardService } from "../services/goalGuardService.js";
+import { GoalGuardTemplateService } from "../services/goalGuardTemplateService.js";
 import { HubNodeService } from "../services/hubNodeService.js";
 import { LoginRateLimiter } from "../services/loginRateLimiter.js";
 import { NodeRequestReplayGuard } from "../services/nodeRequestReplayGuard.js";
@@ -21,6 +22,7 @@ export interface LocalRuntime {
   codexAppServerThreadManager: CodexAppServerThreadManager;
   codexHistoryService: CodexHistoryService;
   fileService: FileService;
+  goalGuardTemplateService: GoalGuardTemplateService;
 }
 
 export interface AppRuntime {
@@ -58,6 +60,7 @@ export function createAppRuntime(): AppRuntime {
             codexAppServerThreadManager,
             codexHistoryService: new CodexHistoryService(),
             fileService: new FileService(config.workspaceRoots),
+            goalGuardTemplateService: new GoalGuardTemplateService(),
           };
         })();
 

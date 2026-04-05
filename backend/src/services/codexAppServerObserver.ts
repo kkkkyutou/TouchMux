@@ -96,19 +96,28 @@ function compactGoalText(value: string): string {
   return normalizeGoalText(value).replace(/\s+/g, " ").trim();
 }
 
+function getPrimarySuccessMarker(goalConfig: GoalGuardConfig | null | undefined): string | null {
+  const firstKeyword = goalConfig?.successKeywords.find((keyword) => keyword.trim().length > 0) ?? null;
+  return firstKeyword ? compactGoalText(firstKeyword) || null : null;
+}
+
 function tailNonEmptyMessages(messages: CodexAssistantMessageRecord[], limit: number): CodexAssistantMessageRecord[] {
   return messages
     .filter((message) => message.text.trim().length > 0)
     .slice(-limit);
 }
 
-function hasStandaloneSuccessMarker(value: string): boolean {
+function hasStandaloneSuccessMarker(value: string, goalConfig: GoalGuardConfig | null | undefined): boolean {
+  const marker = getPrimarySuccessMarker(goalConfig);
+  if (!marker) {
+    return false;
+  }
   return normalizeGoalText(value)
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-8)
-    .some((line) => /^(SUCCESS)$/.test(line));
+    .some((line) => compactGoalText(line) === marker);
 }
 
 const incompleteSignalPatterns: Array<{ label: string; pattern: RegExp }> = [
@@ -182,7 +191,7 @@ function extractNotificationField(notification: unknown, key: string): unknown {
   return params?.[key];
 }
 
-function parseNotificationSnapshot(threadId: string): {
+function parseNotificationSnapshot(threadId: string, sinceTimestamp: number | null): {
   state: CodexObservedTurnState | null;
   assistantMessages: CodexAssistantMessageRecord[];
   errors: string[];
@@ -208,6 +217,7 @@ function parseNotificationSnapshot(threadId: string): {
 
   for (const notification of notifications) {
     lastEventAt = notification.receivedAt;
+    const withinGoalWindow = sinceTimestamp === null || notification.receivedAt >= sinceTimestamp;
     if (notification.method === "turn/started") {
       state = "running";
     }
@@ -216,7 +226,7 @@ function parseNotificationSnapshot(threadId: string): {
       state = applySequentialObservedState(state, mapTurnState(turn?.status, null));
       const turnError = asRecord(turn?.error);
       const turnErrorMessage = asString(turn?.error) ?? asString(turnError?.message);
-      if (turnErrorMessage) {
+      if (turnErrorMessage && withinGoalWindow) {
         errors.push(turnErrorMessage);
       }
     }
@@ -227,12 +237,12 @@ function parseNotificationSnapshot(threadId: string): {
     if (notification.method === "error") {
       const error = asRecord(extractNotificationField(notification, "error"));
       const message = asString(error?.message);
-      if (message) {
+      if (message && withinGoalWindow) {
         errors.push(message);
       }
       state = "failed";
     }
-    if (notification.method === "item/agentMessage/delta") {
+    if (notification.method === "item/agentMessage/delta" && withinGoalWindow) {
       const delta = extractNotificationField(notification, "delta");
       if (typeof delta === "string" && delta.length > 0) {
         assistantMessages.push({
@@ -242,7 +252,7 @@ function parseNotificationSnapshot(threadId: string): {
         });
       }
     }
-    if (notification.method === "item/completed") {
+    if (notification.method === "item/completed" && withinGoalWindow) {
       const item = asRecord(extractNotificationField(notification, "item"));
       if (item?.type === "agentMessage" && typeof item.text === "string" && item.text.length > 0) {
         assistantMessages.push({
@@ -386,7 +396,15 @@ function parseLastTurn(
     mapTurnState(lastTurn?.status, null),
     mapTurnState(null, threadStatus),
   );
-  const includeTurnPayload = state === "running" || sinceTimestamp === null || lastEventAt === null || lastEventAt >= sinceTimestamp;
+  const turnBoundaryAt =
+    parseTimestamp(lastTurn?.completedAt)
+    ?? parseTimestamp(lastTurn?.updatedAt)
+    ?? parseTimestamp(lastTurn?.startedAt)
+    ?? parseTimestamp(lastTurn?.createdAt);
+  const includeTurnPayload =
+    sinceTimestamp === null
+    || state === "running"
+    || (turnBoundaryAt !== null && turnBoundaryAt >= sinceTimestamp);
   if (!lastTurn || !includeTurnPayload) {
     return {
       state,
@@ -450,10 +468,10 @@ function parseLastTurn(
         compactGoalText(assistantText).toLowerCase().includes(compactGoalText(keyword).toLowerCase()),
       ) ?? null
     : null;
-  const matchedStandaloneSuccess = hasStandaloneSuccessMarker(assistantText);
+  const matchedStandaloneSuccess = hasStandaloneSuccessMarker(assistantText, goalConfig);
   const matchedIncompleteSignals = findIncompleteProgressSignals(assistantText);
   const successMessageRecord =
-    assistantMessages.find((message) => hasStandaloneSuccessMarker(message.text))
+    assistantMessages.find((message) => hasStandaloneSuccessMarker(message.text, goalConfig))
     ?? assistantMessages.find((message) =>
       goalConfig
         ? goalConfig.successKeywords.some((keyword) =>
@@ -494,7 +512,7 @@ export class CodexAppServerObserver {
   ): CodexObservation {
     const rawThread = threadRead.rawThread ?? {};
     const sessionStartedAt = parseTimestamp(rawThread.createdAt);
-    const notificationSnapshot = parseNotificationSnapshot(threadRead.threadId);
+    const notificationSnapshot = parseNotificationSnapshot(threadRead.threadId, options.sinceTimestamp ?? null);
     const threadUpdatedAt = parseTimestamp(rawThread.updatedAt);
     const lastEventAt = Math.max(threadUpdatedAt ?? 0, notificationSnapshot.lastEventAt ?? 0) || null;
     const threadStatus = rawThread.status;
@@ -513,10 +531,10 @@ export class CodexAppServerObserver {
           compactGoalText(assistantText).toLowerCase().includes(compactGoalText(keyword).toLowerCase()),
         ) ?? null
       : null;
-    const matchedStandaloneSuccess = hasStandaloneSuccessMarker(assistantText);
+    const matchedStandaloneSuccess = hasStandaloneSuccessMarker(assistantText, options.goalConfig);
     const matchedIncompleteSignals = findIncompleteProgressSignals(assistantText);
     const successMessageRecord =
-      assistantMessages.find((message) => hasStandaloneSuccessMarker(message.text))
+      assistantMessages.find((message) => hasStandaloneSuccessMarker(message.text, options.goalConfig))
       ?? assistantMessages.find((message) =>
         options.goalConfig
           ? options.goalConfig.successKeywords.some((keyword) =>

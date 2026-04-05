@@ -3,6 +3,7 @@ import type {
   FileEntry,
   GoalGuardConfig,
   GoalGuardDebugInfo,
+  GoalGuardTemplate,
   HistoryConversationSummary,
   NodeSummary,
   SessionSummary,
@@ -111,6 +112,13 @@ export async function closeSession(
 
 export async function fetchSessionDetail(token: string, sessionId: string): Promise<SessionSummary> {
   return request<SessionSummary>(`/api/session/${sessionId}/detail`, token);
+}
+
+export async function renameSession(token: string, sessionId: string, nodeId: string, title: string): Promise<SessionSummary> {
+  return request<SessionSummary>(`/api/session/${sessionId}/rename`, token, {
+    method: "POST",
+    body: JSON.stringify({ nodeId, title }),
+  });
 }
 
 export async function runAppServerBridgeProbe(token: string, sessionId: string): Promise<AppServerBridgeProbeResult> {
@@ -239,6 +247,40 @@ export async function updateGoalGuard(
 
 export async function fetchGoalGuardDebug(token: string, sessionId: string): Promise<GoalGuardDebugInfo> {
   return request<GoalGuardDebugInfo>(`/api/goal-guard/${sessionId}/debug`, token);
+}
+
+export async function fetchGoalGuardTemplates(token: string, nodeId: string): Promise<GoalGuardTemplate[]> {
+  const data = await request<{ items: GoalGuardTemplate[] }>(`/api/goal-guard/templates?${new URLSearchParams({ nodeId }).toString()}`, token);
+  return data.items;
+}
+
+export async function saveGoalGuardTemplate(
+  token: string,
+  nodeId: string,
+  payload: { id?: string | null; name: string; content: string },
+): Promise<GoalGuardTemplate> {
+  return request<GoalGuardTemplate>("/api/goal-guard/templates", token, {
+    method: "POST",
+    body: JSON.stringify({ nodeId, ...payload }),
+  });
+}
+
+export async function deleteGoalGuardTemplate(token: string, nodeId: string, templateId: string): Promise<void> {
+  await request<{ ok: true }>(`/api/goal-guard/templates/${templateId}`, token, {
+    method: "DELETE",
+    body: JSON.stringify({ nodeId }),
+  });
+}
+
+export async function setDefaultGoalGuardTemplate(
+  token: string,
+  nodeId: string,
+  templateId: string,
+): Promise<GoalGuardTemplate> {
+  return request<GoalGuardTemplate>(`/api/goal-guard/templates/${templateId}/default`, token, {
+    method: "POST",
+    body: JSON.stringify({ nodeId }),
+  });
 }
 
 export async function overrideStop(token: string, sessionId: string, nodeId: string): Promise<SessionSummary> {

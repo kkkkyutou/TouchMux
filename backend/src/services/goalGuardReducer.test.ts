@@ -100,6 +100,35 @@ test("reduceGoalGuardEvents returns verifying candidate for Codex standalone suc
   });
 });
 
+test("reduceGoalGuardEvents returns verifying candidate for Codex success keyword", () => {
+  const reduction = reduceGoalGuardEvents({
+    codexObservation: buildObservation({
+      available: true,
+      turnState: "completed",
+      matchedSuccessKeyword: "SUCCESS-done",
+      matchedStandaloneSuccess: false,
+      matchedIncompleteSignals: [],
+    }),
+    terminalDiagnostics: {
+      matchedSuccessKeyword: null,
+      matchedStandaloneSuccess: false,
+      matchedIncompleteSignals: [],
+      evidenceEventSeq: null,
+    },
+    hasKeywordRule: true,
+    verificationKind: "file_exists",
+    allowTerminalSignals: true,
+  });
+
+  assert.equal(reduction.nextState, "verifying");
+  assert.deepEqual(reduction.candidate, {
+    source: "codex_assistant_message",
+    kind: "success_keyword",
+    detail: "检测到 Codex 结构化 assistant message 中的成功关键词：SUCCESS-done，开始执行 verifier。",
+    eventSeq: null,
+  });
+});
+
 test("reduceGoalGuardEvents ignores terminal keyword without strict verifier or standalone success", () => {
   const reduction = reduceGoalGuardEvents({
     codexObservation: buildObservation(),

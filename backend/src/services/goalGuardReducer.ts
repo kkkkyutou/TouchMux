@@ -22,7 +22,11 @@ export interface TerminalGoalCandidateDiagnostics {
 export type GoalGuardEvent =
   | { type: "codex_turn_running" }
   | { type: "codex_fatal_error"; message: string }
-  | { type: "codex_candidate_success"; detail: string }
+  | {
+      type: "codex_candidate_success";
+      candidateKind: "codex_assistant_message" | "success_keyword";
+      detail: string;
+    }
   | { type: "terminal_incomplete_signal"; labels: string[] }
   | {
       type: "terminal_candidate_success";
@@ -120,7 +124,18 @@ export function buildGoalGuardEvents(input: GoalGuardReductionInput): GoalGuardE
   ) {
     events.push({
       type: "codex_candidate_success",
+      candidateKind: "codex_assistant_message",
       detail: "检测到 Codex 结构化 assistant message 中的独立 SUCCESS 成功标记，开始执行 verifier。",
+    });
+  } else if (
+    codexObservation.available
+    && codexObservation.matchedIncompleteSignals.length === 0
+    && codexObservation.matchedSuccessKeyword
+  ) {
+    events.push({
+      type: "codex_candidate_success",
+      candidateKind: "success_keyword",
+      detail: `检测到 Codex 结构化 assistant message 中的成功关键词：${codexObservation.matchedSuccessKeyword}，开始执行 verifier。`,
     });
   }
   if (allowTerminalFallback && !terminalDiagnostics.matchedStandaloneSuccess && terminalDiagnostics.matchedIncompleteSignals.length > 0) {
@@ -175,7 +190,7 @@ export function reduceGoalGuardEvents(input: GoalGuardReductionInput): GoalGuard
       fatalReason: null,
       candidate: {
         source: "codex_assistant_message",
-        kind: "codex_assistant_message",
+        kind: codexCandidate.candidateKind,
         detail: codexCandidate.detail,
         eventSeq: null,
       },

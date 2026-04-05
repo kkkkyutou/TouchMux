@@ -594,8 +594,8 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
                       openFile(entry.path);
                     }}
                   >
-                    <span>{entry.type === "directory" ? "DIR" : "FILE"}</span>
-                    <strong>{entry.name}</strong>
+                    <span className="file-entry-kind">{entry.type === "directory" ? "DIR" : "FILE"}</span>
+                    <strong className="file-entry-name" title={entry.name}>{entry.name}</strong>
                   </button>
                   <div className="file-entry-actions">
                     <button

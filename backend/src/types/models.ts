@@ -139,6 +139,15 @@ export interface GoalGuardConfig {
   allowManualStopAfterSuccess: boolean;
 }
 
+export interface GoalGuardTemplate {
+  id: string;
+  name: string;
+  content: string;
+  isDefault: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ChoiceOption {
   id: string;
   label: string;

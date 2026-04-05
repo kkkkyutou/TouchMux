@@ -238,3 +238,110 @@ test("app-server observer keeps failed state when notification cache reports err
   assert.equal(observation.turnState, "failed");
   assert.equal(observation.appServerTurnStateSource, "failed_conflict");
 });
+
+test("app-server observer ignores notification success messages before goal activation timestamp", async () => {
+  const threadId = `thread-notify-window-${Date.now()}`;
+  const now = Date.now();
+  codexAppServerThreadCache.setTrackedThreadIds([threadId]);
+  codexAppServerThreadCache.recordThreadRead({
+    threadId,
+    cwd: "/workspace",
+    rawThread: {
+      id: threadId,
+      cwd: "/workspace",
+      createdAt: new Date(now - 10_000).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+      status: "completed",
+    },
+    turns: [],
+  }, now);
+  codexAppServerNotificationCache.ingest({
+    method: "item/completed",
+    params: {
+      threadId,
+      item: {
+        type: "agentMessage",
+        phase: "final",
+        text: "SUCCESS",
+      },
+    },
+    receivedAt: now - 8_000,
+  });
+
+  const observer = new CodexAppServerObserver(() => ({
+    async initialize() {
+      throw new Error("should not initialize");
+    },
+    async readThread() {
+      throw new Error("should not read");
+    },
+    async disconnect() {
+      return;
+    },
+  }));
+
+  const observation = await observer.inspectSession(buildSession({
+    currentCodexSessionId: threadId,
+  }), {
+    goalConfig: buildSession().goalConfig,
+    sinceTimestamp: now - 2_000,
+  });
+
+  assert.equal(observation.matchedStandaloneSuccess, false);
+  assert.equal(observation.matchedSuccessKeyword, null);
+  assert.equal(observation.successMessage, null);
+});
+
+test("app-server observer ignores thread read success payload from turn completed before goal activation", async () => {
+  const threadId = `thread-turn-window-${Date.now()}`;
+  const now = Date.now();
+  codexAppServerThreadCache.setTrackedThreadIds([threadId]);
+  codexAppServerThreadCache.recordThreadRead({
+    threadId,
+    cwd: "/workspace",
+    rawThread: {
+      id: threadId,
+      cwd: "/workspace",
+      createdAt: new Date(now - 12_000).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+      status: "completed",
+    },
+    turns: [
+      {
+        id: "turn-1",
+        status: "completed",
+        completedAt: new Date(now - 6_000).toISOString(),
+        items: [
+          {
+            type: "agentMessage",
+            phase: "final",
+            text: "SUCCESS",
+          },
+        ],
+      },
+    ],
+  }, now);
+
+  const observer = new CodexAppServerObserver(() => ({
+    async initialize() {
+      throw new Error("should not initialize");
+    },
+    async readThread() {
+      throw new Error("should not read");
+    },
+    async disconnect() {
+      return;
+    },
+  }));
+
+  const observation = await observer.inspectSession(buildSession({
+    currentCodexSessionId: threadId,
+  }), {
+    goalConfig: buildSession().goalConfig,
+    sinceTimestamp: now - 2_000,
+  });
+
+  assert.equal(observation.matchedStandaloneSuccess, false);
+  assert.equal(observation.matchedSuccessKeyword, null);
+  assert.equal(observation.successMessage, null);
+});

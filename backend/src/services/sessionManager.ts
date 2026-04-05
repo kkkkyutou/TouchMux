@@ -194,9 +194,22 @@ function tailNonEmptyLines(value: string, limit: number): string[] {
     .slice(-limit);
 }
 
-function hasStandaloneSuccessMarker(value: string): boolean {
+function getPrimarySuccessMarker(goalConfig: GoalGuardConfig | null | undefined): string | null {
+  const firstKeyword = goalConfig?.successKeywords.find((keyword) => keyword.trim().length > 0) ?? null;
+  return firstKeyword ? normalizeTerminalTextForGoalMatch(firstKeyword).trim() || null : null;
+}
+
+function buildDefaultResumePromptTemplate(goalConfig: GoalGuardConfig | null | undefined): string {
+  return `继续执行既定目标，未完成前不要停止。完成后必须输出 ${getPrimarySuccessMarker(goalConfig) ?? "SUCCESS"}。`;
+}
+
+function hasStandaloneSuccessMarker(value: string, goalConfig: GoalGuardConfig | null | undefined): boolean {
+  const marker = getPrimarySuccessMarker(goalConfig);
+  if (!marker) {
+    return false;
+  }
   const tailLines = tailNonEmptyLines(value, 8);
-  return tailLines.some((line) => /^(SUCCESS)$/.test(line));
+  return tailLines.some((line) => line === marker);
 }
 
 const incompleteSignalPatterns: Array<{ label: string; pattern: RegExp }> = [
@@ -225,7 +238,7 @@ function hasIncompleteProgressSignal(value: string): boolean {
 function buildGuardPromptFragments(goalConfig: GoalGuardConfig): string[] {
   return [
     flattenPromptLine(goalConfig.goalText) ? `当前目标：${flattenPromptLine(goalConfig.goalText)}` : "",
-    flattenPromptLine(goalConfig.resumePromptTemplate || "继续执行既定目标，未完成前不要停止。完成后请输出 SUCCESS。"),
+    flattenPromptLine(goalConfig.resumePromptTemplate || buildDefaultResumePromptTemplate(goalConfig)),
   ].filter(Boolean);
 }
 
@@ -255,7 +268,7 @@ function getGoalMatchDiagnostics(goalWindow: string, goalConfig: GoalGuardConfig
       goalConfig.successKeywords.find((keyword) =>
         normalizedGoalWindow.toLowerCase().includes(normalizeTerminalTextForGoalMatch(keyword).toLowerCase()),
       ) ?? null,
-    matchedStandaloneSuccess: hasStandaloneSuccessMarker(sanitizedGoalWindow),
+    matchedStandaloneSuccess: hasStandaloneSuccessMarker(sanitizedGoalWindow, goalConfig),
     matchedIncompleteSignals: findIncompleteProgressSignals(sanitizedGoalWindow),
     evidenceEventSeq: null,
     sanitizedGoalWindow,
@@ -623,6 +636,16 @@ const terminalFatalStopPatterns = [
   /ECONNREFUSED\b/i,
   /EHOSTUNREACH\b/i,
 ];
+
+export function detectTerminalFatalStopSignal(text: string): string | null {
+  for (const pattern of terminalFatalStopPatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return match[0];
+    }
+  }
+  return null;
+}
 
 export class SessionManager extends EventEmitter {
   private readonly runtime = new Map<string, RuntimeState>();
@@ -1211,6 +1234,13 @@ export class SessionManager extends EventEmitter {
     if (!session) {
       return;
     }
+    if (this.hasTmuxSession(session.tmuxSessionName)) {
+      const refreshed = this.refreshRuntimeFromTmux(session);
+      if (refreshed.changed) {
+        this.emit("session-updated", this.toSummary(refreshed.session));
+      }
+      return;
+    }
     const runtime = this.getRuntime(sessionId);
     runtime.buffer = `${runtime.buffer}${chunk}`.slice(-30000);
     this.appendGuardEvent(sessionId, "terminal_output", chunk);
@@ -1485,14 +1515,13 @@ export class SessionManager extends EventEmitter {
   }
 
   detectFatalGuardStop(sessionId: string): string | null {
-    const buffer = this.getRecentOutput(sessionId).slice(-6000);
-    for (const pattern of terminalFatalStopPatterns) {
-      const match = buffer.match(pattern);
-      if (match) {
-        return match[0];
-      }
-    }
-    return null;
+    const runtime = this.getRuntime(sessionId);
+    const recentTerminalEvents = this.repository
+      .listGuardEventsSince(sessionId, runtime.goalCheckEventSeq, "terminal_output")
+      .map((event) => event.text)
+      .join("\n")
+      .slice(-6000);
+    return detectTerminalFatalStopSignal(recentTerminalEvents);
   }
 
   async detectCodexFatalGuardStop(sessionId: string): Promise<string | null> {
@@ -1625,6 +1654,23 @@ export class SessionManager extends EventEmitter {
       guardDecisionReason: force ? "会话被强制停止。" : "会话已关闭，守卫停止继续接管。",
     });
     this.repository.logAudit("session.closed", { force }, sessionId);
+    this.emitSession(sessionId);
+    return this.toSummary(updated);
+  }
+
+  renameSession(sessionId: string, title: string): SessionSummary {
+    const session = this.repository.getSession(sessionId);
+    if (!session) {
+      throw new Error("会话不存在");
+    }
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      throw new Error("会话名称不能为空");
+    }
+    const updated = this.repository.updateSession(sessionId, {
+      title: nextTitle,
+    });
+    this.repository.logAudit("session.renamed", { title: nextTitle }, sessionId);
     this.emitSession(sessionId);
     return this.toSummary(updated);
   }

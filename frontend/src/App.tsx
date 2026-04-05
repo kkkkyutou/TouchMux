@@ -10,6 +10,7 @@ import {
   isUnauthorizedError,
   login,
   overrideStop,
+  renameSession,
 } from "./lib/api";
 import { useEventSocket, type EventSocketStatus } from "./hooks/useEventSocket";
 import type { HistoryConversationSummary, NodeSummary, SessionSummary } from "./types/api";
@@ -48,11 +49,11 @@ function loadCopyModeState(): Record<string, boolean> {
 function upsertSession(list: SessionSummary[], next: SessionSummary): SessionSummary[] {
   const existing = list.findIndex((item) => item.id === next.id);
   if (existing === -1) {
-    return [next, ...list].sort((left, right) => right.updatedAt - left.updatedAt);
+    return [next, ...list];
   }
   const copy = [...list];
   copy[existing] = next;
-  return copy.sort((left, right) => right.updatedAt - left.updatedAt);
+  return copy;
 }
 
 export default function App() {
@@ -81,6 +82,8 @@ export default function App() {
   const [copyModeEnabled, setCopyModeEnabled] = useState(false);
   const [copyModeSessionState, setCopyModeSessionState] = useState<Record<string, boolean>>(() => loadCopyModeState());
   const deferredSessionId = useDeferredValue(currentSessionId);
+  const [editingSessionTitle, setEditingSessionTitle] = useState(false);
+  const [sessionTitleDraft, setSessionTitleDraft] = useState("");
 
   const reconcileSelectedSessionId = useCallback((list: SessionSummary[], currentId: string | null): string | null => {
     if (!currentId) {
@@ -119,6 +122,11 @@ export default function App() {
     }
     setCopyModeEnabled(copyModeSessionState[currentSessionId] === true);
   }, [currentSessionId, copyModeSessionState]);
+
+  useEffect(() => {
+    setEditingSessionTitle(false);
+    setSessionTitleDraft(currentSession?.title ?? "");
+  }, [currentSession?.id, currentSession?.title]);
 
   const updateCopyModePersistedState = useCallback((sessionId: string, enabled: boolean) => {
     setCopyModeSessionState((current) => {
@@ -274,6 +282,32 @@ export default function App() {
     document.addEventListener("fullscreenchange", syncFullscreenState);
     return () => {
       document.removeEventListener("fullscreenchange", syncFullscreenState);
+    };
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    let stableHeight = window.innerHeight;
+    let lastWidth = window.innerWidth;
+
+    const syncStableViewportHeight = () => {
+      const nextWidth = window.innerWidth;
+      const nextHeight = window.innerHeight;
+      const widthChanged = Math.abs(nextWidth - lastWidth) > 40;
+      if (widthChanged || nextHeight >= stableHeight) {
+        stableHeight = nextHeight;
+      }
+      lastWidth = nextWidth;
+      root.style.setProperty("--touchmux-stable-app-height", `${stableHeight}px`);
+    };
+
+    syncStableViewportHeight();
+    window.addEventListener("resize", syncStableViewportHeight);
+    window.addEventListener("orientationchange", syncStableViewportHeight);
+    return () => {
+      window.removeEventListener("resize", syncStableViewportHeight);
+      window.removeEventListener("orientationchange", syncStableViewportHeight);
+      root.style.removeProperty("--touchmux-stable-app-height");
     };
   }, []);
 
@@ -501,7 +535,64 @@ export default function App() {
             <div className="panel-header">
               <div>
                 <div className="eyebrow">控制台</div>
-                <h2>{currentSession?.title ?? "未选择会话"}</h2>
+                {currentSession ? (
+                  editingSessionTitle ? (
+                    <input
+                      className="session-title-inline-input"
+                      value={sessionTitleDraft}
+                      onChange={(event) => setSessionTitleDraft(event.target.value)}
+                      onBlur={() => {
+                        if (!currentSession) {
+                          setEditingSessionTitle(false);
+                          return;
+                        }
+                        const nextTitle = sessionTitleDraft.trim();
+                        if (!nextTitle || nextTitle === currentSession.title) {
+                          setSessionTitleDraft(currentSession.title);
+                          setEditingSessionTitle(false);
+                          return;
+                        }
+                        void renameSession(token, currentSession.id, currentSession.nodeId, nextTitle)
+                          .then((updated) => {
+                            setSessions((current) => upsertSession(current, updated));
+                            setEditingSessionTitle(false);
+                          })
+                          .catch((error) => {
+                            handleAppError(error, "重命名会话失败");
+                            setSessionTitleDraft(currentSession.title);
+                            setEditingSessionTitle(false);
+                          });
+                      }}
+                      onKeyDown={(event) => {
+                        if (!currentSession) {
+                          return;
+                        }
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                        }
+                        if (event.key === "Escape") {
+                          setSessionTitleDraft(currentSession.title);
+                          setEditingSessionTitle(false);
+                        }
+                      }}
+                      autoFocus
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="session-title-button"
+                      onClick={() => {
+                        setSessionTitleDraft(currentSession.title);
+                        setEditingSessionTitle(true);
+                      }}
+                    >
+                      <h2>{currentSession.title}</h2>
+                    </button>
+                  )
+                ) : (
+                  <h2>未选择会话</h2>
+                )}
                 {currentNode ? <div className="session-meta">节点：{currentNode.label}</div> : null}
               </div>
               {currentSession ? (

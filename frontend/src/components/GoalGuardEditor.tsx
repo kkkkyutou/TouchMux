@@ -1,10 +1,19 @@
-import { useEffect, useState } from "react";
-import { fetchGoalGuardDebug, fetchSessionDetail, updateGoalGuard } from "../lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  deleteGoalGuardTemplate,
+  fetchGoalGuardDebug,
+  fetchGoalGuardTemplates,
+  fetchSessionDetail,
+  saveGoalGuardTemplate,
+  setDefaultGoalGuardTemplate,
+  updateGoalGuard,
+} from "../lib/api";
 import type {
   GoalGuardConfig,
   GoalGuardDebugInfo,
   GoalGuardProgressSignal,
   GoalGuardStructuredFactSource,
+  GoalGuardTemplate,
   GuardDecisionState,
   SessionSummary,
 } from "../types/api";
@@ -14,6 +23,98 @@ interface GoalGuardEditorProps {
   session: SessionSummary | null;
   onUpdated: (session: SessionSummary) => void;
 }
+
+const RESUME_PROMPT_TEMPLATE_STORAGE_KEY = "touchmux-goal-guard-resume-templates-v1";
+
+const defaultResumePromptTemplates: GoalGuardTemplate[] = [
+  {
+    id: "default-guard-continue",
+    name: "标准续跑",
+    content: "当前目标：{{goal_text}}\n继续执行既定目标，未完成前不要停止。完成后输出以下成功信号之一：{{success_signal}}。",
+    isDefault: true,
+    createdAt: 0,
+    updatedAt: 0,
+  },
+  {
+    id: "default-guard-brief",
+    name: "简洁推进",
+    content: "继续推进当前目标，不要停在分析或说明。真正完成后输出以下成功信号之一：{{success_signal}}。",
+    isDefault: false,
+    createdAt: 0,
+    updatedAt: 0,
+  },
+];
+
+function loadResumePromptTemplates(): GoalGuardTemplate[] {
+  if (typeof window === "undefined") {
+    return defaultResumePromptTemplates;
+  }
+  try {
+    const raw = window.localStorage.getItem(RESUME_PROMPT_TEMPLATE_STORAGE_KEY);
+    if (!raw) {
+      return defaultResumePromptTemplates;
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return defaultResumePromptTemplates;
+    }
+    const restored = parsed
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return null;
+        }
+        const record = item as Record<string, unknown>;
+        const id = typeof record.id === "string" ? record.id : null;
+        const name = typeof record.name === "string" ? record.name : null;
+        const content = typeof record.content === "string" ? record.content : null;
+        if (!id || !name || !content) {
+          return null;
+        }
+        return {
+          id,
+          name,
+          content,
+          isDefault: record.isDefault === true,
+          createdAt: 0,
+          updatedAt: 0,
+        } satisfies GoalGuardTemplate;
+      })
+      .filter((item): item is GoalGuardTemplate => Boolean(item));
+    if (restored.length === 0) {
+      return defaultResumePromptTemplates;
+    }
+    return restored;
+  } catch {
+    return defaultResumePromptTemplates;
+  }
+}
+
+function persistResumePromptTemplates(templates: GoalGuardTemplate[]): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(RESUME_PROMPT_TEMPLATE_STORAGE_KEY, JSON.stringify(templates));
+}
+
+function createTemplateId(): string {
+  return `template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function renderResumePromptTemplate(template: string, form: GoalGuardConfig): string {
+  const successKeyword = form.successKeywords[0]?.trim() || "SUCCESS";
+  const successKeywords = form.successKeywords.join(", ");
+  const goalText = form.goalText.trim();
+  return template
+    .replaceAll("{{success_signal}}", successKeywords)
+    .replaceAll("{{success_keyword}}", successKeyword)
+    .replaceAll("{{success_keywords}}", successKeywords)
+    .replaceAll("{{goal_text}}", goalText);
+}
+
+const resumePromptVariables = [
+  { token: "{{success_signal}}", label: "成功信号" },
+  { token: "{{goal_text}}", label: "目标说明" },
+];
 
 function guardDecisionStateLabel(guardDecisionState: GuardDecisionState): string {
   switch (guardDecisionState) {
@@ -142,25 +243,55 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
   const [form, setForm] = useState<GoalGuardConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [debugLoading, setDebugLoading] = useState(false);
+  const [templateLoading, setTemplateLoading] = useState(false);
   const [expanded, setExpanded] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<GoalGuardDebugInfo | null>(null);
+  const [resumePromptDraft, setResumePromptDraft] = useState("");
+  const [resumePromptTemplates, setResumePromptTemplates] = useState<GoalGuardTemplate[]>(() => loadResumePromptTemplates());
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const [templateNameDraft, setTemplateNameDraft] = useState("");
+  const [templateSearch, setTemplateSearch] = useState("");
+  const [templatePanelExpanded, setTemplatePanelExpanded] = useState(false);
+  const resumePromptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionId = session?.id ?? null;
   const goalConfigFingerprint = session ? JSON.stringify(session.goalConfig) : null;
   const effectiveGuardDecisionState =
     debugInfo?.sessionId === sessionId ? debugInfo.guardDecisionState : session?.guardDecisionState ?? "disabled";
   const effectiveGuardDecisionReason =
     debugInfo?.sessionId === sessionId ? debugInfo.guardDecisionReason : session?.guardDecisionReason ?? null;
+  const renderedResumePrompt = useMemo(
+    () => (form ? renderResumePromptTemplate(resumePromptDraft, form) : ""),
+    [form, resumePromptDraft],
+  );
+  const defaultTemplate = useMemo(
+    () => resumePromptTemplates.find((template) => template.isDefault) ?? null,
+    [resumePromptTemplates],
+  );
+  const filteredTemplates = useMemo(() => {
+    const keyword = templateSearch.trim().toLowerCase();
+    if (!keyword) {
+      return resumePromptTemplates;
+    }
+    return resumePromptTemplates.filter((template) =>
+      template.name.toLowerCase().includes(keyword) || template.content.toLowerCase().includes(keyword),
+    );
+  }, [resumePromptTemplates, templateSearch]);
 
   useEffect(() => {
     setForm(session?.goalConfig ?? null);
+    setResumePromptDraft(session?.goalConfig.resumePromptTemplate ?? "");
     setDirty(false);
     setError(null);
     setSavedNotice(null);
     setDebugInfo(null);
     setExpanded(true);
+    setSelectedTemplateId("");
+    setTemplateNameDraft("");
+    setTemplateSearch("");
+    setTemplatePanelExpanded(false);
   }, [sessionId]);
 
   useEffect(() => {
@@ -169,10 +300,258 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
     }
   }, [goalConfigFingerprint, dirty, session]);
 
+  useEffect(() => {
+    if (dirty || !defaultTemplate) {
+      return;
+    }
+    setResumePromptDraft((current) => {
+      if (current.trim().length > 0) {
+        return current;
+      }
+      return defaultTemplate.content;
+    });
+  }, [defaultTemplate, dirty]);
+
+  useEffect(() => {
+    if (!token || !session?.nodeId) {
+      return;
+    }
+    let cancelled = false;
+    setTemplateLoading(true);
+    void fetchGoalGuardTemplates(token, session.nodeId)
+      .then(async (serverTemplates) => {
+        if (cancelled) {
+          return;
+        }
+        const localTemplates = loadResumePromptTemplates();
+        if (serverTemplates.length === 0 && localTemplates.length > 0) {
+          const uploaded: GoalGuardTemplate[] = [];
+          for (const template of localTemplates) {
+            const saved = await saveGoalGuardTemplate(token, session.nodeId, {
+              id: template.id,
+              name: template.name,
+              content: template.content,
+            });
+            uploaded.push(saved);
+          }
+          if (!cancelled) {
+            setResumePromptTemplates(uploaded);
+            persistResumePromptTemplates(uploaded);
+          }
+          return;
+        }
+        setResumePromptTemplates(serverTemplates.length > 0 ? serverTemplates : localTemplates);
+        persistResumePromptTemplates(serverTemplates.length > 0 ? serverTemplates : localTemplates);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setResumePromptTemplates(loadResumePromptTemplates());
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setTemplateLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, session?.nodeId]);
+
   function updateForm(next: GoalGuardConfig): void {
     setForm(next);
     setDirty(true);
     setSavedNotice(null);
+  }
+
+  function saveCurrentDraftAsTemplate(): void {
+    persistCurrentDraftAsTemplate("upsert_by_name");
+  }
+
+  function saveCurrentDraftAsNewTemplate(): void {
+    persistCurrentDraftAsTemplate("always_create");
+  }
+
+  function updateSelectedTemplate(): void {
+    if (!selectedTemplateId) {
+      setError("请先选择一个模板。");
+      return;
+    }
+    persistCurrentDraftAsTemplate("update_selected");
+  }
+
+  function persistCurrentDraftAsTemplate(mode: "upsert_by_name" | "always_create" | "update_selected"): void {
+    const name = templateNameDraft.trim();
+    const content = resumePromptDraft.trim();
+    if (!name) {
+      setError("请先输入模板名称。");
+      return;
+    }
+    if (!content) {
+      setError("当前模板内容为空，无法保存。");
+      return;
+    }
+    const existing = resumePromptTemplates.find((template) => template.name === name);
+    if (!session) {
+      return;
+    }
+    const selectedTemplate = selectedTemplateId
+      ? resumePromptTemplates.find((template) => template.id === selectedTemplateId) ?? null
+      : null;
+    void saveGoalGuardTemplate(token, session.nodeId, {
+      id:
+        mode === "update_selected"
+          ? (selectedTemplate?.id ?? null)
+          : mode === "always_create"
+            ? createTemplateId()
+            : (existing?.id ?? createTemplateId()),
+      name,
+      content,
+    })
+      .then((saved) => {
+        const hasExistingId = resumePromptTemplates.some((template) => template.id === saved.id);
+        const nextTemplates = hasExistingId
+          ? resumePromptTemplates.map((template) => (template.id === saved.id ? saved : template))
+          : [saved, ...resumePromptTemplates];
+        setResumePromptTemplates(nextTemplates);
+        persistResumePromptTemplates(nextTemplates);
+        setSelectedTemplateId(saved.id);
+        setSavedNotice(
+          mode === "update_selected"
+            ? "当前模板已更新。"
+            : hasExistingId
+              ? "模板已覆盖保存。"
+              : "模板已保存。",
+        );
+        setError(null);
+      })
+      .catch((saveError) => {
+        setError(saveError instanceof Error ? saveError.message : "模板保存失败");
+      });
+  }
+
+  function applySelectedTemplate(templateId: string): void {
+    const selectedTemplate = resumePromptTemplates.find((template) => template.id === templateId);
+    if (!selectedTemplate) {
+      return;
+    }
+    setSelectedTemplateId(templateId);
+    setTemplateNameDraft(selectedTemplate.name);
+    setResumePromptDraft(selectedTemplate.content);
+    setDirty(true);
+    setSavedNotice(null);
+    setError(null);
+  }
+
+  function deleteSelectedTemplate(): void {
+    if (!selectedTemplateId || !session) {
+      setError("请先选择一个模板。");
+      return;
+    }
+    void deleteGoalGuardTemplate(token, session.nodeId, selectedTemplateId)
+      .then(() => {
+        const nextTemplates = resumePromptTemplates.filter((template) => template.id !== selectedTemplateId);
+        setResumePromptTemplates(nextTemplates);
+        persistResumePromptTemplates(nextTemplates);
+        setSelectedTemplateId("");
+        setTemplateNameDraft("");
+        setSavedNotice("模板已删除。");
+        setError(null);
+      })
+      .catch((deleteError) => {
+        setError(deleteError instanceof Error ? deleteError.message : "模板删除失败");
+      });
+  }
+
+  function setSelectedTemplateAsDefault(): void {
+    if (!selectedTemplateId || !session) {
+      setError("请先选择一个模板。");
+      return;
+    }
+    void setDefaultGoalGuardTemplate(token, session.nodeId, selectedTemplateId)
+      .then((updatedTemplate) => {
+        const nextTemplates = resumePromptTemplates.map((template) => ({
+          ...template,
+          isDefault: template.id === updatedTemplate.id,
+          updatedAt: template.id === updatedTemplate.id ? updatedTemplate.updatedAt : template.updatedAt,
+        }));
+        setResumePromptTemplates(nextTemplates);
+        persistResumePromptTemplates(nextTemplates);
+        setSavedNotice("默认模板已更新。");
+        setError(null);
+      })
+      .catch((updateError) => {
+        setError(updateError instanceof Error ? updateError.message : "默认模板设置失败");
+      });
+  }
+
+  function appendTemplateVariable(tokenText: string): void {
+    const textarea = resumePromptTextareaRef.current;
+    if (textarea) {
+      const start = textarea.selectionStart ?? resumePromptDraft.length;
+      const end = textarea.selectionEnd ?? resumePromptDraft.length;
+      const nextValue = `${resumePromptDraft.slice(0, start)}${tokenText}${resumePromptDraft.slice(end)}`;
+      setResumePromptDraft(nextValue);
+      window.requestAnimationFrame(() => {
+        const cursor = start + tokenText.length;
+        textarea.focus();
+        textarea.setSelectionRange(cursor, cursor);
+      });
+    } else {
+      setResumePromptDraft((current) => {
+        const suffix = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+        return `${current}${suffix}${tokenText}`;
+      });
+    }
+    setDirty(true);
+    setSavedNotice(null);
+    setError(null);
+  }
+
+  function restoreBuiltInTemplates(): void {
+    if (!session) {
+      return;
+    }
+    setTemplateLoading(true);
+    void Promise.all(
+      defaultResumePromptTemplates.map((template) =>
+        saveGoalGuardTemplate(token, session.nodeId, {
+          id: template.id,
+          name: template.name,
+          content: template.content,
+        }),
+      ),
+    )
+      .then(async (savedTemplates) => {
+        const defaultSaved = savedTemplates.find((template) => template.id === defaultResumePromptTemplates[0].id) ?? savedTemplates[0] ?? null;
+        const normalizedTemplates = resumePromptTemplates.filter(
+          (template) => !defaultResumePromptTemplates.some((builtin) => builtin.id === template.id),
+        );
+        const nextTemplates = [...savedTemplates, ...normalizedTemplates];
+        if (defaultSaved) {
+          const updatedDefault = await setDefaultGoalGuardTemplate(token, session.nodeId, defaultSaved.id);
+          const finalTemplates = nextTemplates.map((template) => ({
+            ...template,
+            isDefault: template.id === updatedDefault.id,
+            updatedAt: template.id === updatedDefault.id ? updatedDefault.updatedAt : template.updatedAt,
+          }));
+          setResumePromptTemplates(finalTemplates);
+          persistResumePromptTemplates(finalTemplates);
+        } else {
+          setResumePromptTemplates(nextTemplates);
+          persistResumePromptTemplates(nextTemplates);
+        }
+        setSelectedTemplateId(defaultResumePromptTemplates[0].id);
+        setTemplateNameDraft(defaultResumePromptTemplates[0].name);
+        setSavedNotice("官方默认模板已恢复。");
+        setError(null);
+      })
+      .catch((restoreError) => {
+        setError(restoreError instanceof Error ? restoreError.message : "恢复官方默认模板失败");
+      })
+      .finally(() => {
+        setTemplateLoading(false);
+      });
   }
 
   function submitGoalGuard(nextEnabled: boolean | null, successMessage: string): void {
@@ -184,11 +563,13 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
     setSavedNotice(null);
     void updateGoalGuard(token, session.nodeId, session.id, {
       ...form,
+      resumePromptTemplate: renderedResumePrompt,
       enabled: nextEnabled ?? session.goalConfig.enabled,
     })
       .then((updated) => {
         onUpdated(updated);
         setForm(updated.goalConfig);
+        setResumePromptDraft((current) => current || updated.goalConfig.resumePromptTemplate);
         setDirty(false);
         setSavedNotice(successMessage);
       })
@@ -343,16 +724,124 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
           <label>
             自动续跑提示
             <textarea
+              ref={resumePromptTextareaRef}
               rows={4}
-              value={form.resumePromptTemplate}
-              onChange={(event) =>
-                updateForm({
-                  ...form,
-                  resumePromptTemplate: event.target.value,
-                })
-              }
+              value={resumePromptDraft}
+              onChange={(event) => {
+                setResumePromptDraft(event.target.value);
+                setDirty(true);
+                setSavedNotice(null);
+              }}
             />
           </label>
+          <div className="session-meta">
+            可用模板变量：{"{{success_signal}}"}、{"{{goal_text}}"}。其中 {"{{success_signal}}"} 会展开成当前配置里的全部成功关键词；旧模板里的 {"{{success_keyword}}"} 和 {"{{success_keywords}}"} 仍然继续兼容。
+          </div>
+          <div className="goal-template-panel">
+            <button
+              type="button"
+              className="goal-template-toggle"
+              onClick={() => setTemplatePanelExpanded((current) => !current)}
+            >
+              <span>模板</span>
+              <span className="goal-template-toggle-summary">
+                {defaultTemplate ? `默认：${defaultTemplate.name}` : "未设置默认模板"}
+              </span>
+              <span>{templatePanelExpanded ? "收起" : "展开"}</span>
+            </button>
+            {!templatePanelExpanded ? null : (
+              <>
+                <div className="goal-template-variable-bar">
+                  {resumePromptVariables.map((item) => (
+                    <button
+                      key={item.token}
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => appendTemplateVariable(item.token)}
+                    >
+                      插入{item.label}
+                    </button>
+                  ))}
+                </div>
+            <div className="goal-template-row">
+              <label>
+                搜索模板
+                <input
+                  value={templateSearch}
+                  onChange={(event) => setTemplateSearch(event.target.value)}
+                  placeholder="按模板名或内容筛选"
+                />
+              </label>
+              <button type="button" className="ghost-button" onClick={restoreBuiltInTemplates} disabled={templateLoading}>
+                恢复官方默认模板
+              </button>
+            </div>
+            <div className="goal-template-row">
+              <label>
+                已保存模板
+                <select
+                  value={selectedTemplateId}
+                  disabled={templateLoading}
+                  onChange={(event) => {
+                    const nextId = event.target.value;
+                    if (!nextId) {
+                      setSelectedTemplateId("");
+                      return;
+                    }
+                    applySelectedTemplate(nextId);
+                  }}
+                >
+                  <option value="">选择一个模板</option>
+                  {filteredTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.isDefault ? `${template.name} · 默认` : template.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" className="ghost-button" onClick={() => applySelectedTemplate(selectedTemplateId)} disabled={!selectedTemplateId}>
+                套用模板
+              </button>
+              <button type="button" className="ghost-button" onClick={updateSelectedTemplate} disabled={!selectedTemplateId}>
+                更新当前模板
+              </button>
+              <button type="button" className="ghost-button" onClick={setSelectedTemplateAsDefault} disabled={!selectedTemplateId}>
+                设为默认
+              </button>
+              <button type="button" className="ghost-button danger" onClick={deleteSelectedTemplate} disabled={!selectedTemplateId}>
+                删除模板
+              </button>
+            </div>
+            <div className="goal-template-row">
+              <label>
+                模板名称
+                <input
+                  value={templateNameDraft}
+                  onChange={(event) => setTemplateNameDraft(event.target.value)}
+                  placeholder="例如：标准推进 / 严格收尾"
+                />
+              </label>
+              <button type="button" className="ghost-button" onClick={saveCurrentDraftAsTemplate}>
+                保存为模板
+              </button>
+              <button type="button" className="ghost-button" onClick={saveCurrentDraftAsNewTemplate}>
+                另存为新模板
+              </button>
+            </div>
+            <div className="session-meta">
+              {templateLoading
+                ? "模板同步中..."
+                : defaultTemplate
+                  ? `当前默认模板：${defaultTemplate.name}。模板已持久化到当前服务端，换浏览器后仍可继续使用。`
+                  : "模板已持久化到当前服务端，换浏览器后仍可继续使用。"}
+            </div>
+            <label>
+              实际发送预览
+              <textarea rows={4} value={renderedResumePrompt} readOnly />
+            </label>
+              </>
+            )}
+          </div>
           {!(form.successCommand ?? "").trim() ? (
             <div className="session-meta">
               当前没有配置严格 verifier。系统仍可观测候选完成信号，但不会自动确认最终成功。

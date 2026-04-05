@@ -123,6 +123,21 @@ export function registerHubRoutes({
     }
   });
 
+  app.post("/api/session/:id/rename", authMiddleware, async (request, response) => {
+    try {
+      const nodeId = readNodeId(request);
+      const summary = await hubNodeService.renameSession(
+        nodeId,
+        readPathParam(request.params.id),
+        String(request.body?.title ?? ""),
+      );
+      triggerSnapshotRefresh();
+      response.json(summary);
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
   app.get("/api/codex/history", authMiddleware, async (request, response) => {
     try {
       const nodeId = readNodeId(request);
@@ -287,6 +302,49 @@ export function registerHubRoutes({
         goalConfig,
       );
       response.json(session);
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
+  app.get("/api/goal-guard/templates", authMiddleware, async (request, response) => {
+    try {
+      const items = await hubNodeService.listGoalGuardTemplates(readNodeId(request));
+      response.json({ items });
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
+  app.post("/api/goal-guard/templates", authMiddleware, async (request, response) => {
+    try {
+      const template = await hubNodeService.saveGoalGuardTemplate(readNodeId(request), {
+        id: typeof request.body?.id === "string" ? request.body.id : null,
+        name: String(request.body?.name ?? ""),
+        content: String(request.body?.content ?? ""),
+      });
+      response.status(201).json(template);
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
+  app.delete("/api/goal-guard/templates/:templateId", authMiddleware, async (request, response) => {
+    try {
+      await hubNodeService.deleteGoalGuardTemplate(readNodeId(request), readPathParam(request.params.templateId));
+      response.json({ ok: true });
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
+  app.post("/api/goal-guard/templates/:templateId/default", authMiddleware, async (request, response) => {
+    try {
+      const template = await hubNodeService.setDefaultGoalGuardTemplate(
+        readNodeId(request),
+        readPathParam(request.params.templateId),
+      );
+      response.json(template);
     } catch (error) {
       sendError(response, error);
     }

@@ -1,6 +1,7 @@
 import type {
   CreateSessionInput,
   GoalGuardConfig,
+  GoalGuardTemplate,
   HistoryConversationSummary,
   NodeConfigEntry,
   NodeSummary,
@@ -167,6 +168,20 @@ export class HubNodeService {
     return { ...summary, nodeId, nodeLabel: node.label };
   }
 
+  async renameSession(nodeId: string, sessionId: string, title: string): Promise<SessionSummary> {
+    const summary = await this.nodeRequest<SessionSummary>(
+      nodeId,
+      `/api/node/session/${encodeURIComponent(sessionId)}/rename`,
+      {
+        method: "POST",
+        body: JSON.stringify({ title }),
+      },
+      "节点会话重命名失败",
+    );
+    const node = this.getNodeOrThrow(nodeId);
+    return { ...summary, nodeId, nodeLabel: node.label };
+  }
+
   async fetchHistory(nodeId: string): Promise<HistoryConversationSummary[]> {
     const data = await this.nodeRequest<{ items: HistoryConversationSummary[] }>(
       nodeId,
@@ -189,6 +204,49 @@ export class HubNodeService {
     );
     const node = this.getNodeOrThrow(nodeId);
     return { ...summary, nodeId, nodeLabel: node.label };
+  }
+
+  async listGoalGuardTemplates(nodeId: string): Promise<GoalGuardTemplate[]> {
+    const data = await this.nodeRequest<{ items: GoalGuardTemplate[] }>(
+      nodeId,
+      "/api/node/goal-guard/templates",
+      { method: "GET" },
+      "节点 Goal Guard 模板读取失败",
+    );
+    return data.items;
+  }
+
+  async saveGoalGuardTemplate(
+    nodeId: string,
+    payload: { id?: string | null; name: string; content: string },
+  ): Promise<GoalGuardTemplate> {
+    return this.nodeRequest<GoalGuardTemplate>(
+      nodeId,
+      "/api/node/goal-guard/templates",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+      "节点 Goal Guard 模板保存失败",
+    );
+  }
+
+  async deleteGoalGuardTemplate(nodeId: string, templateId: string): Promise<void> {
+    await this.nodeRequest<{ ok: true }>(
+      nodeId,
+      `/api/node/goal-guard/templates/${encodeURIComponent(templateId)}`,
+      { method: "DELETE" },
+      "节点 Goal Guard 模板删除失败",
+    );
+  }
+
+  async setDefaultGoalGuardTemplate(nodeId: string, templateId: string): Promise<GoalGuardTemplate> {
+    return this.nodeRequest<GoalGuardTemplate>(
+      nodeId,
+      `/api/node/goal-guard/templates/${encodeURIComponent(templateId)}/default`,
+      { method: "POST", body: JSON.stringify({}) },
+      "节点 Goal Guard 默认模板设置失败",
+    );
   }
 
   async overrideStop(nodeId: string, sessionId: string): Promise<SessionSummary> {

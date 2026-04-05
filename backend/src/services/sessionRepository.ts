@@ -23,7 +23,7 @@ const defaultGoalConfig = {
   successKeywords: [],
   successCommand: null,
   idleTimeoutSec: 90,
-  resumePromptTemplate: "继续执行既定目标，未完成前不要停止。完成后请输出 SUCCESS。",
+  resumePromptTemplate: "继续执行既定目标，未完成前不要停止。完成后必须输出 SUCCESS。",
   allowManualStopAfterSuccess: true,
 } satisfies GoalGuardConfig;
 

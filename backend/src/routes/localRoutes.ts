@@ -98,6 +98,27 @@ export function registerLocalRoutes({
     response.json(session);
   });
 
+  app.post(`${prefix}/session/:id/rename`, authMiddleware, (request, response) => {
+    try {
+      const summary = localRuntime.sessionManager.renameSession(
+        readPathParam(request.params.id),
+        String(request.body?.title ?? ""),
+      );
+      auditService.record({
+        action: "session.renamed",
+        ip: getClientIp(request),
+        detail: {
+          nodeId: config.localNode.id,
+          sessionId: summary.id,
+          title: summary.title,
+        },
+      });
+      response.json(summary);
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
   app.get(`${prefix}/codex/history`, authMiddleware, (_request, response) => {
     response.json({
       items: localRuntime.codexHistoryService.listHistory(),
@@ -302,6 +323,43 @@ export function registerLocalRoutes({
       return;
     }
     response.json(debugInfo);
+  });
+
+  app.get(`${prefix}/goal-guard/templates`, authMiddleware, (_request, response) => {
+    response.json({
+      items: localRuntime.goalGuardTemplateService.listTemplates(),
+    });
+  });
+
+  app.post(`${prefix}/goal-guard/templates`, authMiddleware, (request, response) => {
+    try {
+      const template = localRuntime.goalGuardTemplateService.saveTemplate({
+        id: typeof request.body?.id === "string" ? request.body.id : null,
+        name: String(request.body?.name ?? ""),
+        content: String(request.body?.content ?? ""),
+      });
+      response.status(201).json(template);
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
+  app.delete(`${prefix}/goal-guard/templates/:templateId`, authMiddleware, (request, response) => {
+    try {
+      localRuntime.goalGuardTemplateService.deleteTemplate(readPathParam(request.params.templateId));
+      response.json({ ok: true });
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
+  app.post(`${prefix}/goal-guard/templates/:templateId/default`, authMiddleware, (request, response) => {
+    try {
+      const template = localRuntime.goalGuardTemplateService.setDefaultTemplate(readPathParam(request.params.templateId));
+      response.json(template);
+    } catch (error) {
+      sendError(response, error);
+    }
   });
 
   app.post(`${prefix}/session/:id/app-server-bridge-probe`, authMiddleware, async (request, response) => {

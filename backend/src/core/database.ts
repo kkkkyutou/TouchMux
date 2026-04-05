@@ -159,6 +159,23 @@ db.exec(`
   ON guard_events(session_id, seq DESC);
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS goal_guard_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+
+ensureColumn(
+  "goal_guard_templates",
+  "is_default",
+  "ALTER TABLE goal_guard_templates ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0;",
+);
+
 ensureColumn(
   "session_runtime_state",
   "goal_activated_at",

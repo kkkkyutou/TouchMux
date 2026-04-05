@@ -109,19 +109,28 @@ function compactGoalText(value: string): string {
   return normalizeGoalText(value).replace(/\s+/g, " ").trim();
 }
 
+function getPrimarySuccessMarker(goalConfig: GoalGuardConfig | null | undefined): string | null {
+  const firstKeyword = goalConfig?.successKeywords.find((keyword) => keyword.trim().length > 0) ?? null;
+  return firstKeyword ? compactGoalText(firstKeyword) || null : null;
+}
+
 function tailNonEmptyMessages(messages: CodexAssistantMessageRecord[], limit: number): CodexAssistantMessageRecord[] {
   return messages
     .filter((message) => message.text.trim().length > 0)
     .slice(-limit);
 }
 
-function hasStandaloneSuccessMarker(value: string): boolean {
+function hasStandaloneSuccessMarker(value: string, goalConfig: GoalGuardConfig | null | undefined): boolean {
+  const marker = getPrimarySuccessMarker(goalConfig);
+  if (!marker) {
+    return false;
+  }
   return normalizeGoalText(value)
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-8)
-    .some((line) => /^(SUCCESS)$/.test(line));
+    .some((line) => compactGoalText(line) === marker);
 }
 
 const incompleteSignalPatterns: Array<{ label: string; pattern: RegExp }> = [
@@ -202,7 +211,7 @@ export class CodexObserver {
     const allAssistantText = assistantMessages.map((message) => message.text).join("\n");
     const fatalErrorFloor = parsed.currentTurnStartedAt ?? sinceTimestamp;
     const fatalRelevantErrors = errors.filter((entry) => (fatalErrorFloor === null ? true : entry.timestamp >= fatalErrorFloor));
-    const matchedStandaloneSuccess = hasStandaloneSuccessMarker(successText);
+    const matchedStandaloneSuccess = hasStandaloneSuccessMarker(successText, options.goalConfig);
     const matchedSuccessKeyword = options.goalConfig
       ? options.goalConfig.successKeywords.find((keyword) =>
           compactGoalText(successText).toLowerCase().includes(compactGoalText(keyword).toLowerCase()),
@@ -210,7 +219,7 @@ export class CodexObserver {
       : null;
     const matchedIncompleteSignals = findIncompleteProgressSignals(allAssistantText);
     const successMessageRecord =
-      successCandidateMessages.find((message) => hasStandaloneSuccessMarker(message.text)) ??
+      successCandidateMessages.find((message) => hasStandaloneSuccessMarker(message.text, options.goalConfig)) ??
       successCandidateMessages.find((message) =>
         options.goalConfig
           ? options.goalConfig.successKeywords.some((keyword) =>

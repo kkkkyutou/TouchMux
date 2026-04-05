@@ -49,6 +49,17 @@ export function TerminalPane({
   const wheelCarryRef = useRef(0);
   const copyModeEnabledRef = useRef(copyModeEnabled);
   const inputLockedRef = useRef(inputLocked);
+  const recentManualPasteRef = useRef<{ text: string; at: number } | null>(null);
+
+  const sendInputToTerminal = (text: string) => {
+    if (inputLockedRef.current || text.length === 0) {
+      return;
+    }
+    const current = socketRef.current;
+    if (current?.readyState === WebSocket.OPEN) {
+      current.send(JSON.stringify({ type: "input", payload: text }));
+    }
+  };
 
   useEffect(() => {
     copyModeEnabledRef.current = copyModeEnabled;
@@ -109,6 +120,22 @@ export function TerminalPane({
     terminal.loadAddon(fitAddon);
     terminalRef.current = terminal;
     fitRef.current = fitAddon;
+    terminal.attachCustomKeyEventHandler((event) => {
+      const modifierPressed = event.ctrlKey || event.metaKey;
+      if (!modifierPressed) {
+        return true;
+      }
+      const key = event.key.toLowerCase();
+      if (key === "c" && terminal.hasSelection()) {
+        const selection = terminal.getSelection();
+        if (selection.trim().length === 0) {
+          return false;
+        }
+        void navigator.clipboard.writeText(selection).catch(() => undefined);
+        return false;
+      }
+      return true;
+    });
     if (hostRef.current) {
       terminal.open(hostRef.current);
       fitAddon.fit();
@@ -133,11 +160,6 @@ export function TerminalPane({
       window.setTimeout(syncTerminalViewport, 120);
       window.setTimeout(syncTerminalViewport, 320);
     };
-    const onFocusOut = () => {
-      window.setTimeout(scheduleViewportSync, 80);
-      window.setTimeout(scheduleViewportSync, 240);
-      window.setTimeout(scheduleViewportSync, 520);
-    };
     const resizeObserver = new ResizeObserver(() => {
       scheduleViewportSync();
     });
@@ -145,20 +167,63 @@ export function TerminalPane({
       resizeObserver.observe(hostRef.current);
     }
     window.addEventListener("resize", scheduleViewportSync);
-    window.visualViewport?.addEventListener("resize", scheduleViewportSync);
-    window.visualViewport?.addEventListener("scroll", scheduleViewportSync);
     window.addEventListener("orientationchange", scheduleViewportSync);
-    document.addEventListener("focusin", scheduleViewportSync);
-    document.addEventListener("focusout", onFocusOut);
+    const onPaste = (event: ClipboardEvent) => {
+      const host = hostRef.current;
+      if (!host || !host.contains(document.activeElement)) {
+        return;
+      }
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (!text) {
+        return;
+      }
+      event.preventDefault();
+      recentManualPasteRef.current = { text, at: Date.now() };
+      sendInputToTerminal(text);
+    };
+    const onKeyDownCapture = (event: KeyboardEvent) => {
+      const host = hostRef.current;
+      if (!host || !host.contains(document.activeElement)) {
+        return;
+      }
+      const modifierPressed = event.ctrlKey || event.metaKey;
+      if (!modifierPressed || event.key.toLowerCase() !== "v") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void navigator.clipboard.readText().then((text) => {
+        if (!text) {
+          return;
+        }
+        recentManualPasteRef.current = { text, at: Date.now() };
+        sendInputToTerminal(text);
+      }).catch(() => undefined);
+    };
+    const onCopy = (event: ClipboardEvent) => {
+      const host = hostRef.current;
+      if (!host || !host.contains(document.activeElement)) {
+        return;
+      }
+      const selection = terminal.getSelection();
+      if (!selection.trim()) {
+        return;
+      }
+      event.preventDefault();
+      event.clipboardData?.setData("text/plain", selection);
+      terminal.clearSelection();
+    };
+    hostRef.current?.addEventListener("paste", onPaste as EventListener, true);
+    hostRef.current?.addEventListener("keydown", onKeyDownCapture as EventListener, true);
+    document.addEventListener("copy", onCopy);
 
     return () => {
       resizeObserver.disconnect();
       window.removeEventListener("resize", scheduleViewportSync);
-      window.visualViewport?.removeEventListener("resize", scheduleViewportSync);
-      window.visualViewport?.removeEventListener("scroll", scheduleViewportSync);
       window.removeEventListener("orientationchange", scheduleViewportSync);
-      document.removeEventListener("focusin", scheduleViewportSync);
-      document.removeEventListener("focusout", onFocusOut);
+      hostRef.current?.removeEventListener("paste", onPaste as EventListener, true);
+      hostRef.current?.removeEventListener("keydown", onKeyDownCapture as EventListener, true);
+      document.removeEventListener("copy", onCopy);
       onReady(null);
       onTmuxCopyModeReady(null);
       socketRef.current?.close();
@@ -273,13 +338,16 @@ export function TerminalPane({
     connect();
 
     const disposable = terminal.onData((data) => {
-      if (inputLockedRef.current) {
+      const recentManualPaste = recentManualPasteRef.current;
+      if (
+        recentManualPaste
+        && recentManualPaste.text === data
+        && Date.now() - recentManualPaste.at < 500
+      ) {
+        recentManualPasteRef.current = null;
         return;
       }
-      const current = socketRef.current;
-      if (current?.readyState === WebSocket.OPEN) {
-        current.send(JSON.stringify({ type: "input", payload: data }));
-      }
+      sendInputToTerminal(data);
     });
 
     return () => {
@@ -296,6 +364,21 @@ export function TerminalPane({
     if (!host) {
       return;
     }
+    const onFocusIn = () => {
+      if (window.innerWidth > 720) {
+        return;
+      }
+      window.setTimeout(() => {
+        const panel = host.closest(".console-panel");
+        const target = panel instanceof HTMLElement ? panel : host;
+        const top = target.getBoundingClientRect().top + window.scrollY - 12;
+        window.scrollTo({
+          top: Math.max(0, top),
+          behavior: "smooth",
+        });
+      }, 120);
+    };
+    host.addEventListener("focusin", onFocusIn);
     const pixelsPerLine = 22;
     const sendScrollLines = (action: "line_up" | "line_down", lineCount: number) => {
       const current = socketRef.current;
@@ -367,6 +450,7 @@ export function TerminalPane({
     host.addEventListener("touchcancel", onTouchEnd, { passive: true });
     host.addEventListener("wheel", onWheel, { passive: false });
     return () => {
+      host.removeEventListener("focusin", onFocusIn);
       host.removeEventListener("touchstart", onTouchStart);
       host.removeEventListener("touchmove", onTouchMove);
       host.removeEventListener("touchend", onTouchEnd);
