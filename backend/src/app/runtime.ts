@@ -13,6 +13,7 @@ import { NodeRequestReplayGuard } from "../services/nodeRequestReplayGuard.js";
 import { SessionManager } from "../services/sessionManager.js";
 import { SessionRepository } from "../services/sessionRepository.js";
 import type { NodeSummary } from "../types/models.js";
+import { resolveNodeDirectAccess } from "../utils/nodeAccess.js";
 
 export interface LocalRuntime {
   repository: SessionRepository;
@@ -101,10 +102,12 @@ export function assertHubNodeService(hubNodeService: HubNodeService | null): Hub
 }
 
 export function localNodeSummary(): NodeSummary {
+  const directAccess = resolveNodeDirectAccess(config.localNode);
   return {
     id: config.localNode.id,
     label: config.localNode.label,
     baseUrl: config.localNode.baseUrl,
+    ...directAccess,
     status: "online",
     runtimeMode: config.runtimeMode,
     roots: config.workspaceRoots,

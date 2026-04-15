@@ -54,7 +54,6 @@ export class GoalGuardService {
         !current.goalConfig.enabled ||
         current.status === "closed" ||
         current.guardDecisionState === "satisfied" ||
-        current.guardDecisionState === "blocked_by_missing_verifier" ||
         current.guardDecisionState === "blocked_by_fatal_error"
       ) {
         continue;

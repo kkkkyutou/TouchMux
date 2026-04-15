@@ -195,6 +195,57 @@ test("app-server observer treats thread systemError as failed even if last turn 
   assert.equal(observation.appServerTurnStateSource, "failed_conflict");
 });
 
+test("app-server observer marks 403 responses service error as fatal", async () => {
+  const threadId = `thread-403-fatal-${Date.now()}`;
+  codexAppServerThreadCache.setTrackedThreadIds([threadId]);
+  codexAppServerThreadCache.recordThreadRead({
+    threadId,
+    cwd: "/workspace",
+    rawThread: {
+      id: threadId,
+      cwd: "/workspace",
+      createdAt: new Date(Date.now() - 4_000).toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "failed",
+    },
+    turns: [
+      {
+        id: "turn-1",
+        status: "failed",
+        items: [
+          {
+            type: "commandExecution",
+            command: "codex exec",
+            error: "unexpected status 403 Forbidden: Service error, please retry, url: http://127.0.0.1:8327/v1/responses",
+          },
+        ],
+      },
+    ],
+  }, Date.now());
+
+  const observer = new CodexAppServerObserver(() => ({
+    async initialize() {
+      throw new Error("should not initialize");
+    },
+    async readThread() {
+      throw new Error("should not read");
+    },
+    async disconnect() {
+      return;
+    },
+  }));
+
+  const observation = await observer.inspectSession(buildSession({
+    currentCodexSessionId: threadId,
+  }), {
+    goalConfig: buildSession().goalConfig,
+  });
+
+  assert.equal(observation.available, true);
+  assert.equal(observation.turnState, "failed");
+  assert.match(observation.fatalError ?? "", /403 Forbidden/);
+});
+
 test("app-server observer keeps failed state when notification cache reports error after completed turn", async () => {
   const threadId = `thread-notify-failed-${Date.now()}`;
   codexAppServerThreadCache.setTrackedThreadIds([threadId]);
@@ -344,4 +395,58 @@ test("app-server observer ignores thread read success payload from turn complete
   assert.equal(observation.matchedStandaloneSuccess, false);
   assert.equal(observation.matchedSuccessKeyword, null);
   assert.equal(observation.successMessage, null);
+});
+
+test("app-server observer ignores running-turn fatal payload from before goal activation", async () => {
+  const threadId = `thread-running-fatal-window-${Date.now()}`;
+  const now = Date.now();
+  codexAppServerThreadCache.setTrackedThreadIds([threadId]);
+  codexAppServerThreadCache.recordThreadRead({
+    threadId,
+    cwd: "/workspace",
+    rawThread: {
+      id: threadId,
+      cwd: "/workspace",
+      createdAt: new Date(now - 20_000).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+      status: "inProgress",
+    },
+    turns: [
+      {
+        id: "turn-1",
+        status: "inProgress",
+        startedAt: new Date(now - 15_000).toISOString(),
+        items: [
+          {
+            type: "commandExecution",
+            command: "codex exec",
+            error: "unexpected status 403 Forbidden: Service error, please retry, url: http://127.0.0.1:8327/v1/responses",
+          },
+        ],
+      },
+    ],
+  }, now);
+
+  const observer = new CodexAppServerObserver(() => ({
+    async initialize() {
+      throw new Error("should not initialize");
+    },
+    async readThread() {
+      throw new Error("should not read");
+    },
+    async disconnect() {
+      return;
+    },
+  }));
+
+  const observation = await observer.inspectSession(buildSession({
+    currentCodexSessionId: threadId,
+  }), {
+    goalConfig: buildSession().goalConfig,
+    sinceTimestamp: now - 2_000,
+  });
+
+  assert.equal(observation.turnState, "running");
+  assert.equal(observation.fatalError, null);
+  assert.equal(observation.recentErrors.length, 0);
 });

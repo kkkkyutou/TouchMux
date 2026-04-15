@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { FileEntry, WorkspaceEntry } from "../types/api";
+import { executeNodeFirstRead, formatConnectionPathLabel, type AccessMode } from "../lib/nodeAccess";
 import {
+  ApiError,
   createFile,
   createFolder,
   deleteEntry,
@@ -8,6 +10,7 @@ import {
   listDirectory,
   readFile,
   renameEntry,
+  type RequestTargetOptions,
   uploadFile,
   updateFile,
 } from "../lib/api";
@@ -18,6 +21,10 @@ interface FileBrowserProps {
   roots: WorkspaceEntry[];
   activeSessionCwd: string | null;
   activeSessionRoot: string | null;
+  readRequestOptions?: RequestTargetOptions;
+  writeRequestOptions?: RequestTargetOptions;
+  readAccessMode?: AccessMode;
+  onToggleReadAccessMode?: () => void;
 }
 
 interface ConfirmState {
@@ -51,23 +58,47 @@ function parentPath(value: string): string {
   return parts.slice(0, -1).join("/");
 }
 
-function breadcrumbItems(value: string): Array<{ label: string; path: string }> {
-  const normalized = normalizeDirectoryPath(value);
-  if (normalized === ".") {
-    return [{ label: "Home", path: "." }];
+function classifyFileReadFallbackReason(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 401) {
+      return "直连读取鉴权失败";
+    }
+    if (error.status === 403) {
+      return "直连读取权限不足";
+    }
+    if (error.status === 404) {
+      return "直连读取目标不存在";
+    }
+    if (error.status >= 500) {
+      return "直连读取服务异常";
+    }
+    return "直连读取请求失败";
   }
-  const parts = normalized.split("/").filter(Boolean);
-  return [
-    { label: "Home", path: "." },
-    ...parts.map((part, index) => ({
-      label: part,
-      path: parts.slice(0, index + 1).join("/"),
-    })),
-  ];
+  if (error instanceof TypeError) {
+    return "直连读取网络连接失败";
+  }
+  return "直连读取失败";
 }
 
-export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSessionRoot }: FileBrowserProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
+function createInitialExpandedState(): boolean {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  return window.innerWidth >= 1100;
+}
+
+export function FileBrowser({
+  token,
+  nodeId,
+  roots,
+  activeSessionCwd,
+  activeSessionRoot,
+  readRequestOptions,
+  writeRequestOptions,
+  readAccessMode = "gateway",
+  onToggleReadAccessMode,
+}: FileBrowserProps) {
+  const [isExpanded, setIsExpanded] = useState(createInitialExpandedState);
   const [rootPath, setRootPath] = useState(roots[0]?.rootPath ?? "");
   const [relativePath, setRelativePath] = useState(".");
   const [pathInput, setPathInput] = useState(".");
@@ -78,13 +109,33 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [openEntryMenuPath, setOpenEntryMenuPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [entryDialog, setEntryDialog] = useState<EntryDialogState | null>(null);
   const [entryDialogError, setEntryDialogError] = useState<string | null>(null);
   const [entryDialogSubmitting, setEntryDialogSubmitting] = useState(false);
+  const [readConnectionPath, setReadConnectionPath] = useState<"direct" | "gateway">("gateway");
+  const [readGatewayFallbackUsed, setReadGatewayFallbackUsed] = useState(false);
+  const [readGatewayFallbackReason, setReadGatewayFallbackReason] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingConfirmActionRef = useRef<(() => void) | null>(null);
+
+  async function runReadOperation<T>(operation: (options?: RequestTargetOptions) => Promise<T>): Promise<T> {
+    return executeNodeFirstRead({
+      mode: readAccessMode,
+      directTarget: readRequestOptions,
+      gatewayTarget: writeRequestOptions,
+      readDirect: () => operation(readRequestOptions),
+      readGateway: () => operation(writeRequestOptions),
+      classifyFallbackReason: classifyFileReadFallbackReason,
+      state: {
+        setPath: setReadConnectionPath,
+        setFallbackUsed: setReadGatewayFallbackUsed,
+        setFallbackReason: setReadGatewayFallbackReason,
+      },
+    });
+  }
 
   async function refresh(nextRoot = rootPath, nextRelative = relativePath): Promise<void> {
     if (!nodeId || !nextRoot) {
@@ -92,7 +143,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
       return;
     }
     try {
-      const items = await listDirectory(token, nodeId, nextRoot, nextRelative);
+      const items = await runReadOperation((options) => listDirectory(token, nodeId, nextRoot, nextRelative, options));
       setEntries(items);
       setError(null);
     } catch (refreshError) {
@@ -130,6 +181,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
     setPreview("");
     setPreviewSheetOpen(false);
     setIsDirty(false);
+    setOpenEntryMenuPath(null);
     setConfirmState(null);
     pendingConfirmActionRef.current = null;
   }, [rootPath, relativePath]);
@@ -146,9 +198,15 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
     setEntryDialog(null);
     setEntryDialogError(null);
     setEntryDialogSubmitting(false);
+    setOpenEntryMenuPath(null);
   }, [nodeId]);
 
-  const breadcrumbs = breadcrumbItems(relativePath);
+  useEffect(() => {
+    setReadConnectionPath("gateway");
+    setReadGatewayFallbackUsed(false);
+    setReadGatewayFallbackReason(null);
+  }, [nodeId, rootPath]);
+
   const canSave = Boolean(selectedFilePath) && isDirty && !isSaving;
 
   function clearConfirmState(): void {
@@ -190,7 +248,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
     if (!nodeId) {
       throw new Error("当前未选择节点");
     }
-    const content = await readFile(token, nodeId, rootPath, filePath);
+    const content = await runReadOperation((options) => readFile(token, nodeId, rootPath, filePath, options));
     setSelectedFilePath(filePath);
     setPreview(content);
     setPreviewSheetOpen(true);
@@ -220,7 +278,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
       if (!nodeId) {
         throw new Error("当前未选择节点");
       }
-      await updateFile(token, nodeId, rootPath, selectedFilePath, preview);
+      await updateFile(token, nodeId, rootPath, selectedFilePath, preview, writeRequestOptions);
       setIsDirty(false);
       setError(null);
       await refresh();
@@ -236,7 +294,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
       if (!nodeId) {
         throw new Error("当前未选择节点");
       }
-      const blob = await downloadFile(token, nodeId, rootPath, filePath);
+      const blob = await runReadOperation((options) => downloadFile(token, nodeId, rootPath, filePath, options));
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
@@ -267,7 +325,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
         directoryPath: relativePath,
         fileName: file.name,
         contentBase64,
-      });
+      }, writeRequestOptions);
       setError(null);
       await refresh();
       if (file.type.startsWith("text/")) {
@@ -304,11 +362,11 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
     try {
       setEntryDialogSubmitting(true);
       if (entryDialog.kind === "create-folder") {
-        await createFolder(token, nodeId, rootPath, nextValue);
+        await createFolder(token, nodeId, rootPath, nextValue, writeRequestOptions);
       } else if (entryDialog.kind === "create-file") {
-        await createFile(token, nodeId, rootPath, nextValue);
+        await createFile(token, nodeId, rootPath, nextValue, writeRequestOptions);
       } else if (entryDialog.sourcePath) {
-        await renameEntry(token, nodeId, rootPath, entryDialog.sourcePath, nextValue);
+        await renameEntry(token, nodeId, rootPath, entryDialog.sourcePath, nextValue, writeRequestOptions);
         if (selectedFilePath === entryDialog.sourcePath) {
           setSelectedFilePath(nextValue);
         }
@@ -340,6 +398,26 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [isDirty]);
 
+  useEffect(() => {
+    const shouldLockBackgroundScroll = isExpanded && typeof window !== "undefined" && window.innerWidth <= 1100;
+    const root = document.documentElement;
+    const body = document.body;
+    if (shouldLockBackgroundScroll) {
+      root.classList.add("touchmux-file-sheet-open");
+      body.classList.add("touchmux-file-sheet-open");
+      return () => {
+        root.classList.remove("touchmux-file-sheet-open");
+        body.classList.remove("touchmux-file-sheet-open");
+      };
+    }
+    root.classList.remove("touchmux-file-sheet-open");
+    body.classList.remove("touchmux-file-sheet-open");
+    return () => {
+      root.classList.remove("touchmux-file-sheet-open");
+      body.classList.remove("touchmux-file-sheet-open");
+    };
+  }, [isExpanded]);
+
   return (
     <>
       <div
@@ -354,7 +432,15 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
           setPreviewSheetOpen(false);
         }}
       />
-      <section className={`panel file-browser browser-dock ${isExpanded ? "expanded" : "collapsed"}`}>
+      <section
+        className={`panel file-browser browser-dock ${isExpanded ? "expanded" : "collapsed"}`}
+        onWheelCapture={(event) => {
+          event.stopPropagation();
+        }}
+        onTouchMoveCapture={(event) => {
+          event.stopPropagation();
+        }}
+      >
         <button
           type="button"
           className="panel-toggle-title"
@@ -362,45 +448,50 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
             setIsExpanded((current) => !current);
           }}
         >
-          <span>
-            <div className="eyebrow">文件管理</div>
-            <h2>{isExpanded ? "点击收起文件管理" : "点击展开文件管理"}</h2>
+          <span className="panel-toggle-copy">
+            <span className="eyebrow">工作区</span>
+            <h2>文件</h2>
           </span>
-          <span className="session-meta">{relativePath === "." ? "根目录" : relativePath}</span>
+          <span className="status-pill status-pill-neutral">{isExpanded ? "收起" : "展开"}</span>
         </button>
         {!isExpanded ? null : (
-          <>
+          <div className="file-browser-content">
             <div className="panel-header">
               <div>
                 <div className="eyebrow">文件</div>
-                <h2>现有工作环境</h2>
-              </div>
-              <div className="file-entry-actions">
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={() => {
-                    runWithDiscardProtection(() => {
-                      if (activeSessionRoot) {
-                        setRootPath(activeSessionRoot);
-                      }
-                      if (activeSessionCwd) {
-                        setRelativePath(activeSessionCwd);
-                      }
-                    });
-                  }}
-                >
-                  同步当前终端目录
-                </button>
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={() => {
-                    navigateToDirectory(".");
-                  }}
-                >
-                  回到根目录
-                </button>
+                <h2 title={relativePath === "." ? "根目录" : relativePath}>{relativePath === "." ? "根目录" : relativePath}</h2>
+                <div className="file-browser-top-actions">
+                  {onToggleReadAccessMode ? (
+                    <button type="button" className="ghost-button" onClick={onToggleReadAccessMode}>
+                      {readAccessMode === "direct_preferred" ? "走入口" : "直连优先"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => {
+                      runWithDiscardProtection(() => {
+                        if (activeSessionRoot) {
+                          setRootPath(activeSessionRoot);
+                        }
+                        if (activeSessionCwd) {
+                          setRelativePath(activeSessionCwd);
+                        }
+                      });
+                    }}
+                  >
+                    同步终端
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => {
+                      navigateToDirectory(".");
+                    }}
+                  >
+                    根目录
+                  </button>
+                </div>
               </div>
             </div>
             <div className="file-toolbar">
@@ -452,31 +543,19 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
                 </button>
               </div>
             </div>
-            <div className="file-breadcrumbs">
-              {breadcrumbs.map((item) => (
-                <button
-                  key={item.path}
-                  type="button"
-                  className={`breadcrumb-chip ${item.path === normalizeDirectoryPath(relativePath) ? "active" : ""}`}
-                  onClick={() => navigateToDirectory(item.path)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
             <div className="file-actions">
               <button
                 type="button"
                 onClick={() => {
                   openEntryDialog({
                     kind: "create-folder",
-                    title: "新建文件夹",
-                    submitLabel: "创建文件夹",
+                    title: "新建目录",
+                    submitLabel: "创建目录",
                     value: relativePath === "." ? "new-folder" : `${relativePath}/new-folder`,
                   });
                 }}
               >
-                新建文件夹
+                新建目录
               </button>
               <button
                 type="button"
@@ -516,7 +595,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
               <section className="inline-action-card">
                 <div className="inline-action-header">
                   <div>
-                    <div className="eyebrow">文件操作</div>
+                    <div className="eyebrow">操作</div>
                     <h3>{entryDialog.title}</h3>
                   </div>
                   <button
@@ -600,70 +679,88 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
                   <div className="file-entry-actions">
                     <button
                       type="button"
-                      className="ghost-button"
+                      className="ghost-button file-entry-menu-toggle"
+                      aria-label={`打开 ${entry.name} 的更多操作`}
+                      aria-expanded={openEntryMenuPath === entry.path}
                       onClick={() => {
-                        openEntryDialog({
-                          kind: "rename",
-                          title: `重命名 ${entry.name}`,
-                          submitLabel: "确认改名",
-                          value: entry.path,
-                          sourcePath: entry.path,
-                        });
+                        setOpenEntryMenuPath((current) => (current === entry.path ? null : entry.path));
                       }}
                     >
-                      改名
+                      ⋯
                     </button>
-                    {entry.type === "file" ? (
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        onClick={() => {
-                          void handleDownload(entry.path);
-                        }}
-                      >
-                        下载
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="ghost-button danger"
-                      onClick={() => {
-                        requestConfirmation(
-                          {
-                            title: "删除文件或目录",
-                            message: `确认删除 ${entry.path} 吗？此操作不可撤销。`,
-                            confirmLabel: "确认删除",
-                            tone: "danger",
-                          },
-                          () => {
-                            if (!nodeId) {
-                              setError("当前未选择节点");
-                              return;
-                            }
-                            void deleteEntry(token, nodeId, rootPath, entry.path)
-                              .then(() => {
-                                if (selectedFilePath === entry.path) {
-                                  setSelectedFilePath(null);
-                                  setPreview("");
-                                  setPreviewSheetOpen(false);
-                                  setIsDirty(false);
+                    {openEntryMenuPath === entry.path ? (
+                      <div className="file-entry-menu">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => {
+                            setOpenEntryMenuPath(null);
+                            openEntryDialog({
+                              kind: "rename",
+                              title: `重命名 ${entry.name}`,
+                              submitLabel: "确认改名",
+                              value: entry.path,
+                              sourcePath: entry.path,
+                            });
+                          }}
+                        >
+                          改名
+                        </button>
+                        {entry.type === "file" ? (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() => {
+                              setOpenEntryMenuPath(null);
+                              void handleDownload(entry.path);
+                            }}
+                          >
+                            下载
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="ghost-button danger"
+                          onClick={() => {
+                            setOpenEntryMenuPath(null);
+                            requestConfirmation(
+                              {
+                                title: "删除文件或目录",
+                                message: `确认删除 ${entry.path} 吗？此操作不可撤销。`,
+                                confirmLabel: "确认删除",
+                                tone: "danger",
+                              },
+                              () => {
+                                if (!nodeId) {
+                                  setError("当前未选择节点");
+                                  return;
                                 }
-                                return refresh();
-                              })
-                              .catch((deleteError) => {
-                                setError(deleteError instanceof Error ? deleteError.message : "文件删除失败");
-                              });
-                          },
-                        );
-                      }}
-                    >
-                      删除
-                    </button>
+                                void deleteEntry(token, nodeId, rootPath, entry.path, writeRequestOptions)
+                                  .then(() => {
+                                    if (selectedFilePath === entry.path) {
+                                      setSelectedFilePath(null);
+                                      setPreview("");
+                                      setPreviewSheetOpen(false);
+                                      setIsDirty(false);
+                                    }
+                                    return refresh();
+                                  })
+                                  .catch((deleteError) => {
+                                    setError(deleteError instanceof Error ? deleteError.message : "文件删除失败");
+                                  });
+                              },
+                            );
+                          }}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 </article>
               ))}
             </div>
-          </>
+          </div>
         )}
       </section>
       <section
@@ -678,13 +775,13 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
         <div className="editor-header">
           <div>
             <div className="eyebrow">编辑器</div>
-            <strong>{selectedFilePath ?? "未选择文件"}</strong>
-            {isDirty ? <div className="session-meta">有未保存修改</div> : null}
+            <strong title={selectedFilePath ?? "未选择文件"}>{selectedFilePath ?? "未选择文件"}</strong>
+            {isDirty ? <div className="session-meta">未保存</div> : null}
           </div>
-          <div className="file-entry-actions">
+          <div className="file-preview-toolbar">
             <button
               type="button"
-              className="ghost-button"
+              className="ghost-button compact-toolbar-button"
               disabled={!selectedFilePath}
               onClick={() => {
                 if (!selectedFilePath) {
@@ -693,14 +790,14 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
                 void handleDownload(selectedFilePath);
               }}
             >
-              下载当前文件
+              下载
             </button>
-            <button type="button" onClick={() => void handleSave()} disabled={!canSave}>
+            <button type="button" className="compact-toolbar-button" onClick={() => void handleSave()} disabled={!canSave}>
               {isSaving ? "保存中..." : "保存"}
             </button>
             <button
               type="button"
-              className="ghost-button"
+              className="ghost-button compact-toolbar-button"
               onClick={() => {
                 setPreviewSheetOpen(false);
               }}
@@ -716,7 +813,7 @@ export function FileBrowser({ token, nodeId, roots, activeSessionCwd, activeSess
             setPreview(event.target.value);
             setIsDirty(true);
           }}
-          placeholder="点击文件后可直接编辑并保存文本内容"
+          placeholder="选择文本文件后可直接编辑"
           spellCheck={false}
         />
       </section>

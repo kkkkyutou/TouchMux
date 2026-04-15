@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createFolder, listDirectory } from "../lib/api";
+import { createPortal } from "react-dom";
+import { createFolder, listDirectory, type RequestTargetOptions } from "../lib/api";
 import type { FileEntry, HistoryConversationSummary, NodeSummary, SessionMode, SessionSummary } from "../types/api";
 
 interface SessionSidebarProps {
@@ -23,9 +24,47 @@ interface SessionSidebarProps {
   }) => Promise<void>;
   onCloseSession: (sessionId: string, nodeId: string) => Promise<void>;
   onForceCloseSession: (sessionId: string, nodeId: string) => Promise<void>;
+  requestOptions?: RequestTargetOptions;
+  historyTransportLabel?: string;
+  interfaceBoundarySummary?: {
+    runtimeMode: string | null;
+    totalCount: number;
+    controlPlaneCount: number;
+    nodeFirstReadCount: number;
+    gatewayFirstWriteCount: number;
+  };
+}
+
+interface DragGhostState {
+  sessionId: string;
+  title: string;
+  statusLabel: string;
+  statusTone: "neutral" | "active" | "success" | "danger";
+  runtimeLabel: string;
+  runtimeTone: "neutral" | "active" | "success" | "danger";
+  statusDetail: string;
+  runtimeDetail: string;
+  pathLabel: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  startTop: number;
+  dropping: boolean;
 }
 
 const SESSION_ORDER_STORAGE_KEY = "touchmux-session-order-v1";
+
+function formatNodeCheckedAt(timestamp: number): string {
+  return new Date(timestamp).toLocaleString("zh-CN", {
+    hour12: false,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
 
 function loadStoredRecord(key: string): Record<string, string[]> {
   try {
@@ -70,6 +109,25 @@ function reorderIds(
 
 function sameIdOrder(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function buildPreviewTargetFromInsertIndex(
+  baseOrder: string[],
+  insertIndex: number,
+): { targetId: string; placement: "before" | "after" } | null {
+  if (baseOrder.length === 0) {
+    return null;
+  }
+  if (insertIndex >= baseOrder.length) {
+    return {
+      targetId: baseOrder[baseOrder.length - 1],
+      placement: "after",
+    };
+  }
+  return {
+    targetId: baseOrder[insertIndex],
+    placement: "before",
+  };
 }
 
 function findScrollParent(element: HTMLElement | null): HTMLElement | null {
@@ -144,9 +202,9 @@ function guardStateSummary(session: SessionSummary): { label: string; tone: "neu
       };
     case "blocked_by_missing_verifier":
       return {
-        label: "守卫暂停",
-        tone: "danger",
-        detail: session.guardDecisionReason ?? "缺少严格 verifier，守卫已暂停确认成功。",
+        label: "守卫等待中",
+        tone: "neutral",
+        detail: session.guardDecisionReason ?? "当前没有严格 verifier，候选信号不会阻塞后续续跑。",
       };
     case "blocked_by_fatal_error":
       return {
@@ -167,6 +225,32 @@ function guardStateSummary(session: SessionSummary): { label: string; tone: "neu
         detail: session.guardDecisionReason ?? "当前状态未分类。",
       };
   }
+}
+
+function runtimeContextSummary(session: SessionSummary): {
+  label: string;
+  tone: "neutral" | "active" | "success" | "danger";
+  detail: string;
+} {
+  if (session.runtimeContextState === "live") {
+    return {
+      label: "实时上下文",
+      tone: "success",
+      detail: session.runtimeContextDetail ?? "当前状态来自本次进程内的实时维护。",
+    };
+  }
+  if (session.runtimeContextState === "tmux_resynced") {
+    return {
+      label: "tmux 重同步",
+      tone: "active",
+      detail: session.runtimeContextDetail ?? "当前状态在启动后已重新和 tmux pane 对齐。",
+    };
+  }
+  return {
+    label: "持久化残留",
+    tone: "danger",
+    detail: session.runtimeContextDetail ?? "当前状态仍主要依赖上次持久化快照。",
+  };
 }
 
 function formatDirectoryLabel(rootLabel: string, relativePath: string): string {
@@ -281,6 +365,49 @@ function trimPreview(text: string, maxLength: number): string {
   return `${compact.slice(0, maxLength)}...`;
 }
 
+function renderSessionCardSummary(content: {
+  statusLabel: string;
+  statusTone: "neutral" | "active" | "success" | "danger";
+  runtimeLabel: string;
+  runtimeTone: "neutral" | "active" | "success" | "danger";
+  title: string;
+  pathLabel: string;
+}) {
+  return (
+    <div className="session-card-main compact">
+      <div className="session-card-topline">
+        <span className={`status-pill status-pill-${content.statusTone}`}>{content.statusLabel}</span>
+        <span className={`status-pill status-pill-${content.runtimeTone}`}>{content.runtimeLabel}</span>
+      </div>
+      <strong className="session-card-title">{content.title}</strong>
+      <div className="session-meta session-path">{content.pathLabel}</div>
+    </div>
+  );
+}
+
+function renderSessionCardActions(options?: { ghost?: boolean }) {
+  return (
+    <div className={`session-actions ${options?.ghost ? "ghost-session-actions" : ""}`}>
+      <button
+        type="button"
+        className="ghost-button"
+        tabIndex={-1}
+        aria-hidden={options?.ghost ? "true" : undefined}
+      >
+        显示
+      </button>
+      <button
+        type="button"
+        className="ghost-button danger"
+        tabIndex={-1}
+        aria-hidden={options?.ghost ? "true" : undefined}
+      >
+        删除
+      </button>
+    </div>
+  );
+}
+
 export function SessionSidebar({
   token,
   nodes,
@@ -294,6 +421,9 @@ export function SessionSidebar({
   onCreateSession,
   onCloseSession,
   onForceCloseSession,
+  requestOptions,
+  historyTransportLabel,
+  interfaceBoundarySummary,
 }: SessionSidebarProps) {
   const [title, setTitle] = useState("");
   const [mode, setMode] = useState<SessionMode>("new");
@@ -315,6 +445,7 @@ export function SessionSidebar({
   const [sessionOrderByNode, setSessionOrderByNode] = useState<Record<string, string[]>>(() => loadStoredRecord(SESSION_ORDER_STORAGE_KEY));
   const [draggingSessionId, setDraggingSessionId] = useState<string | null>(null);
   const [dragPreviewTarget, setDragPreviewTarget] = useState<{ targetId: string; placement: "before" | "after" } | null>(null);
+  const [dragGhost, setDragGhost] = useState<DragGhostState | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
   const activeDragSessionIdRef = useRef<string | null>(null);
   const suppressNextClickRef = useRef(false);
@@ -324,9 +455,15 @@ export function SessionSidebar({
   const dragPointerIdRef = useRef<number | null>(null);
   const dragPressStartRef = useRef<{ x: number; y: number } | null>(null);
   const dragStartClientYRef = useRef(0);
+  const dragCurrentTranslateYRef = useRef(0);
+  const dragCardHeightRef = useRef(0);
   const dragCommittedOrderRef = useRef<string[]>([]);
   const dragBaseTopMapRef = useRef(new Map<string, number>());
+  const dragBaseHeightMapRef = useRef(new Map<string, number>());
   const previousOrderedSessionIdsRef = useRef<string[]>([]);
+  const ghostDropStartedRef = useRef(false);
+  const ghostClearTimerRef = useRef<number | null>(null);
+  const skipNextOrderFlipRef = useRef(false);
   const sidebarRootRef = useRef<HTMLDivElement | null>(null);
 
   const historyOptions = useMemo(() => historyItems.slice(0, 20), [historyItems]);
@@ -334,16 +471,22 @@ export function SessionSidebar({
     () => historyItems.find((item) => item.sessionId === sourceId) ?? null,
     [historyItems, sourceId],
   );
+  const effectiveNodeId = useMemo(() => {
+    if (currentNodeId && sessions.some((session) => session.hasTmuxSession && session.nodeId === currentNodeId)) {
+      return currentNodeId;
+    }
+    return sessions.find((session) => session.hasTmuxSession && session.status !== "closed")?.nodeId ?? currentNodeId;
+  }, [currentNodeId, sessions]);
   const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === currentNodeId) ?? null,
-    [nodes, currentNodeId],
+    () => nodes.find((node) => node.id === effectiveNodeId) ?? null,
+    [effectiveNodeId, nodes],
   );
   const roots = selectedNode?.roots ?? [];
   const liveSessions = useMemo(
-    () => sessions.filter((session) => session.hasTmuxSession && session.nodeId === currentNodeId),
-    [sessions, currentNodeId],
+    () => sessions.filter((session) => session.hasTmuxSession && session.nodeId === effectiveNodeId),
+    [effectiveNodeId, sessions],
   );
-  const nodeStorageKey = currentNodeId ?? "__none__";
+  const nodeStorageKey = effectiveNodeId ?? "__none__";
   const manualOrder = sessionOrderByNode[nodeStorageKey] ?? [];
   const orderedLiveSessions = useMemo(() => {
     const sessionMap = new Map(liveSessions.map((session) => [session.id, session]));
@@ -364,6 +507,45 @@ export function SessionSidebar({
   const cwd = directoryPath;
   const selectedDirectoryLabel = formatDirectoryLabel(selectedRootLabel, cwd);
   const orderedSessionIds = useMemo(() => orderedLiveSessions.map((session) => session.id), [orderedLiveSessions]);
+  const renderedSessionIds = useMemo(() => {
+    if (!draggingSessionId) {
+      return orderedSessionIds;
+    }
+    const sourceOrder = dragCommittedOrderRef.current.length > 0 ? dragCommittedOrderRef.current : orderedSessionIds;
+    if (!dragPreviewTarget) {
+      return sourceOrder;
+    }
+    return reorderIds(sourceOrder, draggingSessionId, dragPreviewTarget.targetId, dragPreviewTarget.placement);
+  }, [dragPreviewTarget, draggingSessionId, orderedSessionIds]);
+  const renderedLiveSessions = useMemo(() => {
+    const sessionMap = new Map(orderedLiveSessions.map((session) => [session.id, session]));
+    return renderedSessionIds
+      .map((sessionId) => sessionMap.get(sessionId))
+      .filter((session): session is SessionSummary => Boolean(session));
+  }, [orderedLiveSessions, renderedSessionIds]);
+  const sessionCardMetaMap = useMemo(
+    () =>
+      new Map(
+        orderedLiveSessions.map((session) => {
+          const summary = guardStateSummary(session);
+          const runtimeSummary = runtimeContextSummary(session);
+          return [
+            session.id,
+            {
+              title: session.title,
+              statusLabel: summary.label,
+              statusTone: summary.tone,
+              statusDetail: summary.detail,
+              runtimeLabel: runtimeSummary.label,
+              runtimeTone: runtimeSummary.tone,
+              runtimeDetail: runtimeSummary.detail,
+              pathLabel: formatDirectoryLabel(rootLabelMap.get(session.workspaceRoot) ?? "当前根目录", session.cwd),
+            },
+          ];
+        }),
+      ),
+    [orderedLiveSessions, rootLabelMap],
+  );
 
   useEffect(() => {
     if (roots.length === 0) {
@@ -408,23 +590,35 @@ export function SessionSidebar({
     if (!draggingSessionId) {
       return;
     }
+    const root = sidebarRootRef.current;
+    const scrollParent = findScrollParent(root);
+    const previousHtmlOverflow = document.documentElement.style.overflow;
     const previousTouchAction = document.body.style.touchAction;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousOverscrollBehavior = document.body.style.overscrollBehavior;
     const previousUserSelect = document.body.style.userSelect;
     const previousWebkitUserSelect = document.body.style.webkitUserSelect;
+    document.documentElement.style.overflow = "hidden";
     document.body.style.touchAction = "none";
+    document.body.style.overflow = "hidden";
+    document.body.style.overscrollBehavior = "none";
     document.body.style.userSelect = "none";
     document.body.style.webkitUserSelect = "none";
+    if (scrollParent) {
+      scrollParent.style.overscrollBehavior = "none";
+      scrollParent.style.touchAction = "none";
+    }
     const applyDraggedCardTransform = (translateY: number) => {
       const draggedId = activeDragSessionIdRef.current;
       if (!draggedId) {
         return;
       }
-      const element = cardRefs.current.get(draggedId);
-      if (!element) {
-        return;
-      }
-      element.style.transition = "none";
-      element.style.transform = `translate3d(0, ${translateY - 6}px, 0) scale(1.018)`;
+      dragCurrentTranslateYRef.current = translateY - 6;
+      setDragGhost((current) =>
+        current && current.sessionId === draggedId && !current.dropping
+          ? { ...current, top: current.startTop + dragCurrentTranslateYRef.current }
+          : current,
+      );
     };
     const onPointerMove = (event: PointerEvent) => {
       if (dragPointerIdRef.current !== null && event.pointerId !== dragPointerIdRef.current) {
@@ -432,41 +626,64 @@ export function SessionSidebar({
       }
       event.preventDefault();
       dragEngagedRef.current = true;
-      applyDraggedCardTransform(event.clientY - dragStartClientYRef.current);
+      const rawTranslateY = event.clientY - dragStartClientYRef.current;
+      applyDraggedCardTransform(rawTranslateY);
       const draggedId = activeDragSessionIdRef.current;
-      const card = document
-        .elementsFromPoint(event.clientX, event.clientY)
-        .find((element) => {
-          if (!(element instanceof HTMLElement)) {
-            return false;
-          }
-          const sessionCard = element.closest("[data-session-id]");
-          if (!(sessionCard instanceof HTMLElement)) {
-            return false;
-          }
-          return sessionCard.dataset.sessionId !== draggedId;
-        })
-        ?.closest("[data-session-id]");
-      const targetId = card instanceof HTMLElement ? card.dataset.sessionId ?? null : null;
-      if (!draggedId || !targetId || draggedId === targetId) {
+      if (!draggedId) {
         return;
       }
-      const targetRect = card instanceof HTMLElement ? card.getBoundingClientRect() : null;
-      const placement =
-        targetRect && event.clientY > targetRect.top + targetRect.height / 2
-          ? "after"
-          : "before";
+      const sourceOrder = dragCommittedOrderRef.current.length > 0 ? dragCommittedOrderRef.current : orderedSessionIds;
+      const baseOrder = sourceOrder.filter((sessionId) => sessionId !== draggedId);
+      const draggedBaseTop = dragBaseTopMapRef.current.get(draggedId);
+      const draggedHeight = dragCardHeightRef.current || dragBaseHeightMapRef.current.get(draggedId) || 0;
+      if (draggedBaseTop === undefined || draggedHeight <= 0 || baseOrder.length === 0) {
+        setDragPreviewTarget(null);
+        return;
+      }
+      const draggedTop = draggedBaseTop + dragCurrentTranslateYRef.current;
+      const draggedBottom = draggedTop + draggedHeight;
+      const thresholdEdge = dragCurrentTranslateYRef.current <= 0 ? draggedTop : draggedBottom;
+      let insertIndex = baseOrder.length;
+      for (let index = 0; index < baseOrder.length; index += 1) {
+        const sessionId = baseOrder[index];
+        const slotTop = dragBaseTopMapRef.current.get(sessionId);
+        const slotHeight = dragBaseHeightMapRef.current.get(sessionId);
+        if (slotTop === undefined || slotHeight === undefined) {
+          continue;
+        }
+        const slotCenter = slotTop + slotHeight / 2;
+        if (thresholdEdge <= slotCenter) {
+          insertIndex = index;
+          break;
+        }
+      }
+      const originalInsertIndex = sourceOrder.indexOf(draggedId);
+      if (insertIndex === originalInsertIndex) {
+        setDragPreviewTarget(null);
+        return;
+      }
+      const previewTarget = buildPreviewTargetFromInsertIndex(baseOrder, insertIndex);
       setDragPreviewTarget((current) => {
-        if (current?.targetId === targetId && current.placement === placement) {
+        if (
+          current?.targetId === previewTarget?.targetId
+          && current?.placement === previewTarget?.placement
+        ) {
           return current;
         }
-        return { targetId, placement };
+        return previewTarget;
       });
     };
     const clearDrag = (commitOrder: boolean) => {
       const draggedId = activeDragSessionIdRef.current;
       const previewTarget = dragPreviewTarget;
       if (commitOrder && draggedId && previewTarget) {
+        skipNextOrderFlipRef.current = true;
+        ghostDropStartedRef.current = false;
+        setDragGhost((current) =>
+          current && current.sessionId === draggedId
+            ? { ...current, top: current.startTop + dragCurrentTranslateYRef.current, dropping: true }
+            : current,
+        );
         setSessionOrderByNode((current) => {
           const previous = current[nodeStorageKey] ?? dragCommittedOrderRef.current;
           const nextForNode = reorderIds(previous, draggedId, previewTarget.targetId, previewTarget.placement);
@@ -477,13 +694,8 @@ export function SessionSidebar({
           persistStoredRecord(SESSION_ORDER_STORAGE_KEY, next);
           return next;
         });
-      }
-      if (draggedId) {
-        const draggedElement = cardRefs.current.get(draggedId);
-        if (draggedElement) {
-          draggedElement.style.transition = "";
-          draggedElement.style.transform = "";
-        }
+      } else {
+        setDragGhost(null);
       }
       if (draggingSessionId) {
         suppressNextClickRef.current = true;
@@ -498,29 +710,52 @@ export function SessionSidebar({
       activeDragSessionIdRef.current = null;
       dragPointerIdRef.current = null;
       dragPressStartRef.current = null;
+      dragCurrentTranslateYRef.current = 0;
+      dragCardHeightRef.current = 0;
       dragBaseTopMapRef.current = new Map();
+      dragBaseHeightMapRef.current = new Map();
       dragEngagedRef.current = false;
       setDragPreviewTarget(null);
       setDraggingSessionId(null);
     };
     window.addEventListener("pointermove", onPointerMove);
+    const preventTouchScroll = (event: TouchEvent) => {
+      event.preventDefault();
+    };
     const handlePointerUp = () => {
       clearDrag(true);
     };
     const handlePointerCancel = () => {
       clearDrag(false);
     };
+    window.addEventListener("touchmove", preventTouchScroll, { passive: false });
     window.addEventListener("pointerup", handlePointerUp);
     window.addEventListener("pointercancel", handlePointerCancel);
     return () => {
+      document.documentElement.style.overflow = previousHtmlOverflow;
       document.body.style.touchAction = previousTouchAction;
+      document.body.style.overflow = previousBodyOverflow;
+      document.body.style.overscrollBehavior = previousOverscrollBehavior;
       document.body.style.userSelect = previousUserSelect;
       document.body.style.webkitUserSelect = previousWebkitUserSelect;
+      if (scrollParent) {
+        scrollParent.style.overscrollBehavior = "";
+        scrollParent.style.touchAction = "";
+      }
       window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("touchmove", preventTouchScroll);
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerCancel);
     };
   }, [dragPreviewTarget, draggingSessionId, nodeStorageKey]);
+
+  useEffect(() => {
+    return () => {
+      if (ghostClearTimerRef.current !== null) {
+        window.clearTimeout(ghostClearTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const root = sidebarRootRef.current;
@@ -546,35 +781,13 @@ export function SessionSidebar({
   }, [draggingSessionId]);
 
   useLayoutEffect(() => {
-    if (draggingSessionId) {
-      const draggedId = draggingSessionId;
-      const sourceOrder = dragCommittedOrderRef.current.length > 0 ? dragCommittedOrderRef.current : orderedSessionIds;
-      const previewOrder = dragPreviewTarget ? reorderIds(sourceOrder, draggedId, dragPreviewTarget.targetId, dragPreviewTarget.placement) : sourceOrder;
-      const previewIndexMap = new Map(previewOrder.map((sessionId, index) => [sessionId, index]));
-      for (const [sessionId, element] of cardRefs.current.entries()) {
-        if (sessionId === draggedId) {
-          continue;
-        }
-        const sourceIndex = sourceOrder.indexOf(sessionId);
-        const previewIndex = previewIndexMap.get(sessionId);
-        const currentTop = sourceIndex >= 0 ? dragBaseTopMapRef.current.get(sourceOrder[sourceIndex]) : undefined;
-        const previewTop =
-          previewIndex !== undefined
-            ? dragBaseTopMapRef.current.get(sourceOrder[previewIndex] ?? "")
-            : undefined;
-        const offset = currentTop !== undefined && previewTop !== undefined ? previewTop - currentTop : 0;
-        element.style.transition = "transform 220ms cubic-bezier(0.2, 0.82, 0.2, 1)";
-        element.style.transform = offset === 0 ? "" : `translateY(${offset}px)`;
-      }
-      return;
-    }
     const previousOrder = previousOrderedSessionIdsRef.current;
-    const orderChanged = previousOrder.length > 0 && !sameIdOrder(previousOrder, orderedSessionIds);
+    const orderChanged = previousOrder.length > 0 && !sameIdOrder(previousOrder, renderedSessionIds);
+    const skipOrderFlip = skipNextOrderFlipRef.current;
+    skipNextOrderFlipRef.current = false;
     for (const [sessionId, element] of cardRefs.current.entries()) {
-      if (sessionId !== draggingSessionId) {
-        element.style.transition = "";
-        element.style.transform = "";
-      }
+      element.style.transition = "";
+      element.style.transform = "";
     }
     const nextCardTops = new Map<string, number>();
     for (const [sessionId, element] of cardRefs.current.entries()) {
@@ -589,7 +802,7 @@ export function SessionSidebar({
       if (previousTop === undefined || !element) {
         continue;
       }
-      if (!orderChanged) {
+      if (!orderChanged || skipOrderFlip) {
         continue;
       }
       const deltaY = previousTop - nextTop;
@@ -599,13 +812,45 @@ export function SessionSidebar({
       element.style.transition = "none";
       element.style.transform = `translateY(${deltaY}px)`;
       window.requestAnimationFrame(() => {
-        element.style.transition = "transform 340ms cubic-bezier(0.18, 0.88, 0.2, 1), border-color 260ms ease, box-shadow 260ms ease, background-color 260ms ease";
+        element.style.transition = draggingSessionId
+          ? "transform 220ms cubic-bezier(0.2, 0.82, 0.2, 1), border-color 220ms ease, box-shadow 220ms ease, background-color 220ms ease"
+          : "transform 340ms cubic-bezier(0.18, 0.88, 0.2, 1), border-color 260ms ease, box-shadow 260ms ease, background-color 260ms ease";
         element.style.transform = "";
       });
     }
     previousCardTopsRef.current = nextCardTops;
-    previousOrderedSessionIdsRef.current = orderedSessionIds;
-  }, [dragPreviewTarget, draggingSessionId, orderedLiveSessions, orderedSessionIds]);
+    previousOrderedSessionIdsRef.current = renderedSessionIds;
+    if (dragGhost?.dropping && !ghostDropStartedRef.current) {
+      const targetElement = cardRefs.current.get(dragGhost.sessionId);
+      if (!targetElement) {
+        setDragGhost(null);
+        return;
+      }
+      const targetRect = targetElement.getBoundingClientRect();
+      ghostDropStartedRef.current = true;
+      window.requestAnimationFrame(() => {
+        setDragGhost((current) =>
+          current && current.sessionId === dragGhost.sessionId
+            ? {
+                ...current,
+                top: targetRect.top,
+                left: targetRect.left,
+                width: targetRect.width,
+                height: targetRect.height,
+              }
+            : current,
+        );
+      });
+      if (ghostClearTimerRef.current !== null) {
+        window.clearTimeout(ghostClearTimerRef.current);
+      }
+      ghostClearTimerRef.current = window.setTimeout(() => {
+        setDragGhost((current) => (current?.sessionId === dragGhost.sessionId ? null : current));
+        ghostDropStartedRef.current = false;
+        ghostClearTimerRef.current = null;
+      }, 220);
+    }
+  }, [dragGhost, draggingSessionId, orderedSessionIds, renderedSessionIds]);
 
   useEffect(() => {
     if (!token || !currentNodeId || !workspaceRoot || !showCreateForm) {
@@ -616,7 +861,7 @@ export function SessionSidebar({
     async function loadCurrentDirectories(): Promise<void> {
       try {
         setDirectoryLoading(true);
-        const items = await listDirectory(token, nodeId, workspaceRoot, cwd);
+        const items = await listDirectory(token, nodeId, workspaceRoot, cwd, requestOptions);
         if (cancelled) {
           return;
         }
@@ -656,7 +901,7 @@ export function SessionSidebar({
     async function loadSuggestions(): Promise<void> {
       try {
         setSuggestionLoading(true);
-        const items = await listDirectory(token, nodeId, workspaceRoot, suggestionContext.basePath);
+        const items = await listDirectory(token, nodeId, workspaceRoot, suggestionContext.basePath, requestOptions);
         if (cancelled) {
           return;
         }
@@ -717,18 +962,50 @@ export function SessionSidebar({
     longPressTimerRef.current = window.setTimeout(() => {
       dragCommittedOrderRef.current = orderedSessionIds;
       const nextBaseTopMap = new Map<string, number>();
+      const nextBaseHeightMap = new Map<string, number>();
+      const draggedElement = cardRefs.current.get(sessionId);
+      const draggedMeta = sessionCardMetaMap.get(sessionId);
+      const draggedRect = draggedElement?.getBoundingClientRect();
+      if (!draggedElement || !draggedMeta || !draggedRect) {
+        activeDragSessionIdRef.current = null;
+        longPressTimerRef.current = null;
+        return;
+      }
       for (const orderedSessionId of orderedSessionIds) {
         const element = cardRefs.current.get(orderedSessionId);
         if (!element) {
           continue;
         }
+        const rect = element.getBoundingClientRect();
         element.style.transition = "";
         if (orderedSessionId !== sessionId) {
           element.style.transform = "";
+        } else {
+          dragCardHeightRef.current = rect.height;
         }
-        nextBaseTopMap.set(orderedSessionId, element.getBoundingClientRect().top);
+        nextBaseTopMap.set(orderedSessionId, rect.top);
+        nextBaseHeightMap.set(orderedSessionId, rect.height);
       }
       dragBaseTopMapRef.current = nextBaseTopMap;
+      dragBaseHeightMapRef.current = nextBaseHeightMap;
+      ghostDropStartedRef.current = false;
+      setDragGhost({
+        sessionId,
+        title: draggedMeta.title,
+        statusLabel: draggedMeta.statusLabel,
+        statusTone: draggedMeta.statusTone,
+        runtimeLabel: draggedMeta.runtimeLabel,
+        runtimeTone: draggedMeta.runtimeTone,
+        statusDetail: draggedMeta.statusDetail,
+        runtimeDetail: draggedMeta.runtimeDetail,
+        pathLabel: draggedMeta.pathLabel,
+        left: draggedRect.left,
+        top: draggedRect.top - 6,
+        width: draggedRect.width,
+        height: draggedRect.height,
+        startTop: draggedRect.top - 6,
+        dropping: false,
+      });
       setDragPreviewTarget(null);
       setDraggingSessionId(sessionId);
       longPressTimerRef.current = null;
@@ -760,8 +1037,8 @@ export function SessionSidebar({
     const relativePath = cwd === "." ? nextName : `${cwd}/${nextName}`;
     try {
       setCreatingFolder(true);
-      await createFolder(token, currentNodeId, workspaceRoot, normalizeRelativePath(relativePath));
-      const items = await listDirectory(token, currentNodeId, workspaceRoot, cwd);
+      await createFolder(token, currentNodeId, workspaceRoot, normalizeRelativePath(relativePath), requestOptions);
+      const items = await listDirectory(token, currentNodeId, workspaceRoot, cwd, requestOptions);
       setChildDirectories(items.filter((entry) => entry.type === "directory"));
       setDirectoryError(null);
       setNewFolderName("");
@@ -777,14 +1054,13 @@ export function SessionSidebar({
       <div className="drawer-section-header">
         <div>
           <div className="eyebrow">终端</div>
-          <h2>管理终端</h2>
-          <div className="session-meta">默认控制台保持空白，只有你手动选择某个终端后才显示对应内容。</div>
+          <h2>终端</h2>
         </div>
       </div>
 
       <div className="node-picker">
         <div className="directory-picker-summary">
-          <strong>当前机器</strong>
+          <strong>节点</strong>
           {selectedNode ? <span className="session-meta">{selectedNode.status === "online" ? "在线" : "离线"}</span> : null}
         </div>
         <select
@@ -799,18 +1075,54 @@ export function SessionSidebar({
             </option>
           ))}
         </select>
+        {selectedNode ? (
+          <div className="node-status-stack">
+            <div className="session-meta">{selectedNode.directAccessReady ? "终端可直连" : "终端走统一入口"}</div>
+            <div className="session-meta">最近检测：{formatNodeCheckedAt(selectedNode.lastCheckedAt)}</div>
+          </div>
+        ) : null}
         {selectedNode?.error ? <div className="session-meta">{selectedNode.error}</div> : null}
       </div>
 
+      {interfaceBoundarySummary && interfaceBoundarySummary.totalCount > 0 ? (
+        <div className="node-picker">
+          <div className="directory-picker-summary">
+            <strong>接口边界</strong>
+            <span className="session-meta">
+              {interfaceBoundarySummary.runtimeMode ? `${interfaceBoundarySummary.runtimeMode} 模式` : "运行模式待确认"}
+            </span>
+          </div>
+          <div className="session-actions compact-meta-actions">
+            <span className="status-pill status-pill-neutral">控制面 {interfaceBoundarySummary.controlPlaneCount}</span>
+            <span className="status-pill status-pill-active">直连读 {interfaceBoundarySummary.nodeFirstReadCount}</span>
+            <span className="status-pill status-pill-danger">统一写 {interfaceBoundarySummary.gatewayFirstWriteCount}</span>
+          </div>
+        </div>
+      ) : null}
+
       <div className="session-list">
-        {orderedLiveSessions.length === 0 ? <div className="session-meta">当前没有运行中的 Codex 终端。</div> : null}
-        {orderedLiveSessions.map((session) => {
-          const summary = guardStateSummary(session);
+        {selectedNode?.status === "offline" ? (
+          <div className="error-banner inline-banner">
+            当前节点离线，先恢复节点再切换或新建终端。
+          </div>
+        ) : null}
+        {renderedLiveSessions.length === 0 ? (
+          <div className="session-meta">
+            {selectedNode?.status === "offline" ? "当前无法确认是否还有运行中的终端。" : "当前没有运行中的终端。"}
+          </div>
+        ) : null}
+        {renderedLiveSessions.map((session) => {
+          const cardMeta = sessionCardMetaMap.get(session.id);
+          if (!cardMeta) {
+            return null;
+          }
           return (
           <article
             key={session.id}
             data-session-id={session.id}
-            className={`session-card ${currentSessionId === session.id ? "active" : ""} ${draggingSessionId === session.id ? "dragging" : ""}`}
+            className={`session-card ${currentSessionId === session.id ? "active" : ""} ${
+              draggingSessionId === session.id ? "drag-placeholder" : ""
+            } ${dragGhost?.dropping && dragGhost.sessionId === session.id ? "ghost-drop-target" : ""}`}
             ref={(element) => {
               if (element) {
                 cardRefs.current.set(session.id, element);
@@ -872,16 +1184,7 @@ export function SessionSidebar({
               }
             }}
           >
-            <div className="session-card-main compact">
-              <div className="session-card-topline">
-                <span className={`status-pill status-pill-${summary.tone}`}>{summary.label}</span>
-              </div>
-              <strong className="session-card-title">{session.title}</strong>
-              <div className="session-meta session-path">
-                {formatDirectoryLabel(rootLabelMap.get(session.workspaceRoot) ?? "当前根目录", session.cwd)}
-              </div>
-              <div className="session-meta session-status-detail">{summary.detail}</div>
-            </div>
+            {renderSessionCardSummary(cardMeta)}
             <div className="session-actions">
               <button
                 type="button"
@@ -908,19 +1211,37 @@ export function SessionSidebar({
                   void onForceCloseSession(session.id, session.nodeId);
                 }}
               >
-                删除
+                强停
               </button>
             </div>
           </article>
         );
         })}
       </div>
+      {dragGhost && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className={`session-card drag-ghost ${dragGhost.dropping ? "dropping" : ""}`}
+              style={{
+                top: dragGhost.top,
+                left: dragGhost.left,
+                width: dragGhost.width,
+                minHeight: dragGhost.height,
+              }}
+              aria-hidden="true"
+            >
+              {renderSessionCardSummary(dragGhost)}
+              {renderSessionCardActions({ ghost: true })}
+            </div>,
+            document.body,
+          )
+        : null}
 
       <div className="drawer-section">
         <div className="drawer-section-header">
           <div>
-            <div className="eyebrow">新建</div>
-            <h2>创建终端</h2>
+            <div className="eyebrow">创建</div>
+            <h2>新建终端</h2>
           </div>
           <button
             type="button"
@@ -948,6 +1269,11 @@ export function SessionSidebar({
               setSubmitError(null);
               if (!currentNodeId) {
                 setSubmitError("请先选择一个节点");
+                setSubmitting(false);
+                return;
+              }
+              if (!selectedNode || selectedNode.status !== "online") {
+                setSubmitError(selectedNode?.error ?? "当前节点离线，无法创建新会话");
                 setSubmitting(false);
                 return;
               }
@@ -997,7 +1323,7 @@ export function SessionSidebar({
             </label>
             <div className="directory-picker">
               <div className="directory-picker-summary">
-                <strong>启动目录</strong>
+                <strong>目录</strong>
                 {directoryLoading ? <span className="session-meta">读取中...</span> : null}
               </div>
               <div className="address-bar-row">
@@ -1096,7 +1422,7 @@ export function SessionSidebar({
                 </select>
               </label>
               <div className="directory-picker-top">
-                <span className="session-meta">可以直接输入完整路径，例如 {formatDirectoryLabel(selectedRootLabel, "projects")}。</span>
+                <span className="session-meta">可直接输入完整路径，例如 {formatDirectoryLabel(selectedRootLabel, "projects")}。</span>
               </div>
               {directoryError ? <div className="error-banner">{directoryError}</div> : null}
               {!suggestionLoading && pathSuggestions.length === 0 ? null : (
@@ -1133,11 +1459,12 @@ export function SessionSidebar({
                     ))}
                   </select>
                 </label>
+                {historyTransportLabel ? <div className="session-meta">{historyTransportLabel}</div> : null}
                 {selectedHistoryItem ? (
                   <section className="inline-action-card history-preview-card">
                     <div className="inline-action-header">
                       <div>
-                        <div className="eyebrow">会话预览</div>
+                        <div className="eyebrow">预览</div>
                         <h3>{selectedHistoryItem.sessionId.slice(0, 8)}</h3>
                       </div>
                       <span className="session-meta">{selectedHistoryItem.messageCount} 条记录</span>
@@ -1167,10 +1494,10 @@ export function SessionSidebar({
               {submitting
                 ? "处理中..."
                 : mode === "new"
-                  ? "创建并启动"
+                  ? "创建"
                   : mode === "resume"
-                    ? "恢复到新 tmux"
-                    : "Fork 到新 tmux"}
+                    ? "恢复"
+                    : "Fork"}
             </button>
           </form>
         )}

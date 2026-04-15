@@ -39,7 +39,8 @@ const localNodeId = (process.env.TOUCHMUX_NODE_ID ?? "local").trim() || "local";
 const localNodeLabel =
   (process.env.TOUCHMUX_NODE_LABEL ?? (runtimeMode === "node" ? os.hostname() : "This Machine")).trim() ||
   "This Machine";
-const localNodeBaseUrl = (process.env.TOUCHMUX_NODE_PUBLIC_BASE_URL ?? "").trim();
+const localNodePublicBaseUrl = (process.env.TOUCHMUX_NODE_PUBLIC_BASE_URL ?? "").trim();
+const localNodePublicWsBaseUrl = (process.env.TOUCHMUX_NODE_PUBLIC_WS_BASE_URL ?? "").trim();
 
 function readHubNodes(): NodeConfigEntry[] {
   const json = process.env.TOUCHMUX_HUB_NODES_JSON?.trim();
@@ -65,6 +66,8 @@ function readHubNodes(): NodeConfigEntry[] {
         const label = String(candidate.label ?? id).trim();
         const baseUrl = String(candidate.baseUrl ?? "").trim().replace(/\/$/, "");
         const sharedSecret = String(candidate.sharedSecret ?? "").trim();
+        const publicBaseUrl = String(candidate.publicBaseUrl ?? "").trim().replace(/\/$/, "");
+        const publicWsBaseUrl = String(candidate.publicWsBaseUrl ?? "").trim().replace(/\/$/, "");
         if (!id || !label || !baseUrl) {
           return null;
         }
@@ -73,6 +76,8 @@ function readHubNodes(): NodeConfigEntry[] {
           label,
           baseUrl,
           ...(sharedSecret ? { sharedSecret } : {}),
+          ...(publicBaseUrl ? { publicBaseUrl } : {}),
+          ...(publicWsBaseUrl ? { publicWsBaseUrl } : {}),
         } satisfies NodeConfigEntry;
       })
       .filter((entry): entry is NodeConfigEntry => entry !== null);
@@ -97,6 +102,7 @@ export interface AppConfig {
   sessionHome: string;
   codexHomeDir: string;
   shell: string;
+  tmuxLiteralSubmitDelayMs: number;
   goalGuardIntervalMs: number;
   defaultIdleTimeoutSec: number;
   loginRateLimitWindowMs: number;
@@ -138,6 +144,7 @@ export const config: AppConfig = {
   sessionHome,
   codexHomeDir,
   shell: process.env.TOUCHMUX_DEFAULT_SHELL ?? "/bin/bash",
+  tmuxLiteralSubmitDelayMs: Number(process.env.TOUCHMUX_TMUX_LITERAL_SUBMIT_DELAY_MS ?? 10000),
   goalGuardIntervalMs: Number(process.env.TOUCHMUX_GOAL_GUARD_INTERVAL_MS ?? 5000),
   defaultIdleTimeoutSec: Number(process.env.TOUCHMUX_IDLE_TIMEOUT_SEC ?? 90),
   loginRateLimitWindowMs: Number(process.env.TOUCHMUX_LOGIN_WINDOW_MS ?? 60000),
@@ -162,7 +169,9 @@ export const config: AppConfig = {
   localNode: {
     id: localNodeId,
     label: localNodeLabel,
-    baseUrl: localNodeBaseUrl,
+    baseUrl: localNodePublicBaseUrl,
+    ...(localNodePublicBaseUrl ? { publicBaseUrl: localNodePublicBaseUrl } : {}),
+    ...(localNodePublicWsBaseUrl ? { publicWsBaseUrl: localNodePublicWsBaseUrl } : {}),
   },
   nodeSharedSecret: (process.env.TOUCHMUX_NODE_SHARED_SECRET ?? "").trim(),
   hubNodes,
@@ -298,7 +307,14 @@ export const configSchema: ConfigSchemaEntry[] = [
     required: false,
     defaultValue: "",
     example: "https://node-a.example.com",
-    description: "节点对外可达地址，仅用于展示或未来扩展；single 模式下可留空。",
+    description: "节点给浏览器直连使用的 HTTP 地址；后续 portal + node 直连模式会优先使用它。",
+  },
+  {
+    key: "TOUCHMUX_NODE_PUBLIC_WS_BASE_URL",
+    required: false,
+    defaultValue: "",
+    example: "wss://node-a.example.com",
+    description: "节点给浏览器直连使用的 WebSocket 地址；不填时后续可从 HTTP 地址自动推导。",
   },
   {
     key: "TOUCHMUX_NODE_SHARED_SECRET",

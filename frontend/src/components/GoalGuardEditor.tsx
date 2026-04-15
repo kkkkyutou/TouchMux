@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { executeNodeFirstRead, type AccessMode } from "../lib/nodeAccess";
 import {
   deleteGoalGuardTemplate,
   fetchGoalGuardDebug,
@@ -6,6 +7,7 @@ import {
   fetchSessionDetail,
   saveGoalGuardTemplate,
   setDefaultGoalGuardTemplate,
+  type RequestTargetOptions,
   updateGoalGuard,
 } from "../lib/api";
 import type {
@@ -22,6 +24,9 @@ interface GoalGuardEditorProps {
   token: string;
   session: SessionSummary | null;
   onUpdated: (session: SessionSummary) => void;
+  readRequestOptions?: RequestTargetOptions;
+  writeRequestOptions?: RequestTargetOptions;
+  readAccessMode?: AccessMode;
 }
 
 const RESUME_PROMPT_TEMPLATE_STORAGE_KEY = "touchmux-goal-guard-resume-templates-v1";
@@ -137,7 +142,7 @@ function guardDecisionStateLabel(guardDecisionState: GuardDecisionState): string
     case "verification_failed":
       return "校验未通过，继续等待";
     case "blocked_by_missing_verifier":
-      return "缺少严格验收";
+      return "继续等待";
     case "blocked_by_fatal_error":
       return "检测到阻塞错误";
     default:
@@ -148,29 +153,29 @@ function guardDecisionStateLabel(guardDecisionState: GuardDecisionState): string
 function guardDecisionStateHint(guardDecisionState: GuardDecisionState): string {
   switch (guardDecisionState) {
     case "disabled":
-      return "当前只保存规则，不会自动向终端发送任何内容。";
+      return "当前只保存规则。";
     case "waiting_for_idle":
-      return "守卫已启动，但还在等待空闲阈值或新的终端输出。";
+      return "等待新输出或空闲窗口。";
     case "observing_output":
-      return "守卫已经观测到 checkpoint 之后的新输出，但这不等于已经完成目标。";
+      return "已观测到新输出。";
     case "observing_codex_turn":
-      return "守卫从 Codex 结构化事件确认当前 turn 仍在执行，因此不会过早自动续跑。";
+      return "Codex 当前仍在执行。";
     case "verifying":
-      return "守卫已检测到候选完成信号，正在执行 verifier，并等待结构化回执。";
+      return "正在执行验收。";
     case "resuming":
-      return "守卫刚刚向终端发送了续跑提示，等待 Codex 继续执行。";
+      return "已发送续跑提示。";
     case "satisfied":
-      return "成功证据已经确认，当前守卫不再续跑，也不会再回退成等待态。";
+      return "成功证据已确认。";
     case "manually_overridden":
-      return "守卫或会话已经被手动强制停止。";
+      return "已手动停止。";
     case "verification_failed":
-      return "守卫曾检测到候选成功信号，但命令校验未通过，当前会继续等待后续输出。";
+      return "候选完成未通过验收。";
     case "blocked_by_missing_verifier":
-      return "守卫已经看到候选完成信号，但由于没有配置严格 verifier，系统拒绝自动确认成功。";
+      return "缺少严格 verifier。";
     case "blocked_by_fatal_error":
-      return "守卫检测到了明确的阻塞错误，当前不会继续自动续跑。";
+      return "检测到阻塞错误。";
     default:
-      return "当前状态未知，请重新刷新页面确认。";
+      return "状态未知。";
   }
 }
 
@@ -190,15 +195,15 @@ function progressSignalLabel(signal: GoalGuardProgressSignal): string {
 function progressSignalHint(signal: GoalGuardProgressSignal, terminalSignalsAllowed: boolean): string {
   switch (signal) {
     case "structured_codex":
-      return "当前以结构化 Codex 事件为主依据，terminal 文本只作为辅助线索。";
+      return "当前以结构化事实为主。";
     case "terminal_fallback":
       return terminalSignalsAllowed
-        ? "当前结构化观测不可用，守卫退回到 terminal fallback 信号。"
-        : "当前没有启用 terminal 主判定，terminal 文本不会推动主状态机。";
+        ? "当前退回到 terminal fallback。"
+        : "terminal 文本当前不推动主状态机。";
     case "none":
-      return "当前没有检测到明确进展信号，系统会继续等待或按空闲策略续跑。";
+      return "当前没有明确进展信号。";
     default:
-      return "当前进展信号来源未知。";
+      return "来源未知。";
   }
 }
 
@@ -239,7 +244,39 @@ function managerSyncLabel(lastSyncOk: boolean, lastSyncedAt: number | null): str
   return lastSyncOk ? "最近同步成功" : "最近同步失败";
 }
 
-export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorProps) {
+function classifyGoalGuardReadFallbackReason(error: unknown): string {
+  if (error instanceof Error && "status" in error) {
+    const status = typeof (error as { status?: unknown }).status === "number" ? (error as { status: number }).status : null;
+    if (status === 401) {
+      return "直连读取鉴权失败";
+    }
+    if (status === 403) {
+      return "直连读取权限不足";
+    }
+    if (status === 404) {
+      return "直连读取目标不存在";
+    }
+    if (status !== null && status >= 500) {
+      return "直连读取服务异常";
+    }
+    if (status !== null) {
+      return "直连读取请求失败";
+    }
+  }
+  if (error instanceof TypeError) {
+    return "直连读取网络连接失败";
+  }
+  return "直连读取失败";
+}
+
+export function GoalGuardEditor({
+  token,
+  session,
+  onUpdated,
+  readRequestOptions,
+  writeRequestOptions,
+  readAccessMode = "gateway",
+}: GoalGuardEditorProps) {
   const [form, setForm] = useState<GoalGuardConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [debugLoading, setDebugLoading] = useState(false);
@@ -255,6 +292,9 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
   const [templateNameDraft, setTemplateNameDraft] = useState("");
   const [templateSearch, setTemplateSearch] = useState("");
   const [templatePanelExpanded, setTemplatePanelExpanded] = useState(false);
+  const [readConnectionPath, setReadConnectionPath] = useState<"direct" | "gateway">("gateway");
+  const [readGatewayFallbackUsed, setReadGatewayFallbackUsed] = useState(false);
+  const [readGatewayFallbackReason, setReadGatewayFallbackReason] = useState<string | null>(null);
   const resumePromptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionId = session?.id ?? null;
   const goalConfigFingerprint = session ? JSON.stringify(session.goalConfig) : null;
@@ -280,6 +320,22 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
     );
   }, [resumePromptTemplates, templateSearch]);
 
+  async function runReadOperation<T>(operation: (options?: RequestTargetOptions) => Promise<T>): Promise<T> {
+    return executeNodeFirstRead({
+      mode: readAccessMode,
+      directTarget: readRequestOptions,
+      gatewayTarget: writeRequestOptions,
+      readDirect: () => operation(readRequestOptions),
+      readGateway: () => operation(writeRequestOptions),
+      classifyFallbackReason: classifyGoalGuardReadFallbackReason,
+      state: {
+        setPath: setReadConnectionPath,
+        setFallbackUsed: setReadGatewayFallbackUsed,
+        setFallbackReason: setReadGatewayFallbackReason,
+      },
+    });
+  }
+
   useEffect(() => {
     setForm(session?.goalConfig ?? null);
     setResumePromptDraft(session?.goalConfig.resumePromptTemplate ?? "");
@@ -292,6 +348,9 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
     setTemplateNameDraft("");
     setTemplateSearch("");
     setTemplatePanelExpanded(false);
+    setReadConnectionPath("gateway");
+    setReadGatewayFallbackUsed(false);
+    setReadGatewayFallbackReason(null);
   }, [sessionId]);
 
   useEffect(() => {
@@ -318,7 +377,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
     }
     let cancelled = false;
     setTemplateLoading(true);
-    void fetchGoalGuardTemplates(token, session.nodeId)
+    void runReadOperation((options) => fetchGoalGuardTemplates(token, session.nodeId, options))
       .then(async (serverTemplates) => {
         if (cancelled) {
           return;
@@ -331,7 +390,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
               id: template.id,
               name: template.name,
               content: template.content,
-            });
+            }, writeRequestOptions);
             uploaded.push(saved);
           }
           if (!cancelled) {
@@ -356,7 +415,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
     return () => {
       cancelled = true;
     };
-  }, [token, session?.nodeId]);
+  }, [token, session?.nodeId, readRequestOptions, writeRequestOptions, readAccessMode]);
 
   function updateForm(next: GoalGuardConfig): void {
     setForm(next);
@@ -407,7 +466,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
             : (existing?.id ?? createTemplateId()),
       name,
       content,
-    })
+    }, writeRequestOptions)
       .then((saved) => {
         const hasExistingId = resumePromptTemplates.some((template) => template.id === saved.id);
         const nextTemplates = hasExistingId
@@ -448,7 +507,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
       setError("请先选择一个模板。");
       return;
     }
-    void deleteGoalGuardTemplate(token, session.nodeId, selectedTemplateId)
+    void deleteGoalGuardTemplate(token, session.nodeId, selectedTemplateId, writeRequestOptions)
       .then(() => {
         const nextTemplates = resumePromptTemplates.filter((template) => template.id !== selectedTemplateId);
         setResumePromptTemplates(nextTemplates);
@@ -468,15 +527,22 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
       setError("请先选择一个模板。");
       return;
     }
-    void setDefaultGoalGuardTemplate(token, session.nodeId, selectedTemplateId)
-      .then((updatedTemplate) => {
-        const nextTemplates = resumePromptTemplates.map((template) => ({
+    void setDefaultGoalGuardTemplate(token, session.nodeId, selectedTemplateId, writeRequestOptions)
+      .then(() => {
+        return runReadOperation((options) => fetchGoalGuardTemplates(token, session.nodeId, options));
+      })
+      .then((nextTemplates) => {
+        const updatedTemplate = nextTemplates.find((template) => template.id === selectedTemplateId);
+        if (!updatedTemplate) {
+          throw new Error("默认模板设置后未能重新读取模板列表");
+        }
+        const normalizedTemplates = nextTemplates.map((template) => ({
           ...template,
           isDefault: template.id === updatedTemplate.id,
           updatedAt: template.id === updatedTemplate.id ? updatedTemplate.updatedAt : template.updatedAt,
         }));
-        setResumePromptTemplates(nextTemplates);
-        persistResumePromptTemplates(nextTemplates);
+        setResumePromptTemplates(normalizedTemplates);
+        persistResumePromptTemplates(normalizedTemplates);
         setSavedNotice("默认模板已更新。");
         setError(null);
       })
@@ -519,7 +585,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
           id: template.id,
           name: template.name,
           content: template.content,
-        }),
+        }, writeRequestOptions),
       ),
     )
       .then(async (savedTemplates) => {
@@ -529,7 +595,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
         );
         const nextTemplates = [...savedTemplates, ...normalizedTemplates];
         if (defaultSaved) {
-          const updatedDefault = await setDefaultGoalGuardTemplate(token, session.nodeId, defaultSaved.id);
+          const updatedDefault = await setDefaultGoalGuardTemplate(token, session.nodeId, defaultSaved.id, writeRequestOptions);
           const finalTemplates = nextTemplates.map((template) => ({
             ...template,
             isDefault: template.id === updatedDefault.id,
@@ -565,7 +631,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
       ...form,
       resumePromptTemplate: renderedResumePrompt,
       enabled: nextEnabled ?? session.goalConfig.enabled,
-    })
+    }, writeRequestOptions)
       .then((updated) => {
         onUpdated(updated);
         setForm(updated.goalConfig);
@@ -599,7 +665,10 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
     }
     setDebugLoading(true);
     setError(null);
-    void Promise.all([fetchGoalGuardDebug(token, session.id), fetchSessionDetail(token, session.id)])
+    void Promise.all([
+      runReadOperation((options) => fetchGoalGuardDebug(token, session.id, options)),
+      runReadOperation((options) => fetchSessionDetail(token, session.id, options)),
+    ])
       .then(([nextDebugInfo, nextSession]) => {
         setDebugInfo(nextDebugInfo);
         onUpdated(nextSession);
@@ -644,20 +713,13 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
             <strong>{guardDecisionStateLabel(effectiveGuardDecisionState)}</strong>
             <span>{guardDecisionStateHint(effectiveGuardDecisionState)}</span>
           </div>
-          {effectiveGuardDecisionReason ? (
-            <div className="session-meta">当前判断依据：{effectiveGuardDecisionReason}</div>
-          ) : null}
-          {session.currentTaskRunId ? <div className="session-meta">当前 taskRunId：{session.currentTaskRunId}</div> : null}
-          <div className="session-meta">
-            保存配置不会自动启动守卫。只有点击“启动守卫”后，后台才会开始监控空闲并自动续跑。
-          </div>
           <label>
             目标说明
             <textarea
               rows={3}
               value={form.goalText}
               onChange={(event) => updateForm({ ...form, goalText: event.target.value })}
-              placeholder="描述 Codex 本次必须完成的目标"
+              placeholder="这次必须完成什么"
             />
           </label>
           <label>
@@ -673,7 +735,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
                     .filter(Boolean),
                 })
               }
-              placeholder="SUCCESS, done, fixed"
+              placeholder="SUCCESS, done"
             />
           </label>
           <label>
@@ -686,17 +748,16 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
                   successCommand: event.target.value || null,
                 })
               }
-              placeholder={'比如：npm run build / file_exists:dist/app.js / file_contains:log.txt::READY / json_equals:result.json::status::"ok"'}
+              placeholder={'例如：npm run build 或 file_exists:dist/app.js'}
             />
           </label>
-          <div className="session-meta">
-            {"支持结构化 verifier 前缀：file_exists:相对路径、file_contains:路径::文本、json_equals:路径::字段.path::JSON值。未使用前缀时仍按 shell 命令执行。"}
-          </div>
+          <div className="session-meta">支持 `file_exists:`、`file_contains:`、`json_equals:`，其余按 shell 命令执行。</div>
           <div className="inline-grid">
             <label>
               空闲阈值（秒）
               <input
                 type="number"
+                inputMode="numeric"
                 min={15}
                 value={form.idleTimeoutSec}
                 onChange={(event) =>
@@ -734,9 +795,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
               }}
             />
           </label>
-          <div className="session-meta">
-            可用模板变量：{"{{success_signal}}"}、{"{{goal_text}}"}。其中 {"{{success_signal}}"} 会展开成当前配置里的全部成功关键词；旧模板里的 {"{{success_keyword}}"} 和 {"{{success_keywords}}"} 仍然继续兼容。
-          </div>
+          <div className="session-meta">变量：{"{{success_signal}}"}、{"{{goal_text}}"}。</div>
           <div className="goal-template-panel">
             <button
               type="button"
@@ -773,7 +832,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
                 />
               </label>
               <button type="button" className="ghost-button" onClick={restoreBuiltInTemplates} disabled={templateLoading}>
-                恢复官方默认模板
+                恢复默认
               </button>
             </div>
             <div className="goal-template-row">
@@ -822,59 +881,52 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
                 />
               </label>
               <button type="button" className="ghost-button" onClick={saveCurrentDraftAsTemplate}>
-                保存为模板
+                保存模板
               </button>
               <button type="button" className="ghost-button" onClick={saveCurrentDraftAsNewTemplate}>
-                另存为新模板
+                另存
               </button>
             </div>
             <div className="session-meta">
               {templateLoading
                 ? "模板同步中..."
                 : defaultTemplate
-                  ? `当前默认模板：${defaultTemplate.name}。模板已持久化到当前服务端，换浏览器后仍可继续使用。`
-                  : "模板已持久化到当前服务端，换浏览器后仍可继续使用。"}
+                  ? `默认模板：${defaultTemplate.name}`
+                  : "未设置默认模板"}
             </div>
             <label>
-              实际发送预览
+              发送预览
               <textarea rows={4} value={renderedResumePrompt} readOnly />
             </label>
               </>
             )}
           </div>
-          {!(form.successCommand ?? "").trim() ? (
-            <div className="session-meta">
-              当前没有配置严格 verifier。系统仍可观测候选完成信号，但不会自动确认最终成功。
-            </div>
-          ) : null}
           <div className="goal-guard-actions">
-            <button type="button" disabled={saving} onClick={() => submitGoalGuard(null, "Goal Guard 配置已保存。")}>
-              {saving ? "处理中..." : "保存配置"}
+            <button type="button" disabled={saving} onClick={() => submitGoalGuard(null, "守卫配置已保存。")}>
+              {saving ? "处理中..." : "保存"}
             </button>
             <button
               type="button"
               disabled={saving || session.goalConfig.enabled}
-              onClick={() => submitGoalGuard(true, "Goal Guard 已启动，接下来会按空闲阈值接管续跑。")}
+              onClick={() => submitGoalGuard(true, "守卫已启动。")}
             >
-              启动守卫
+              启动
             </button>
             <button
               type="button"
               className="ghost-button"
               disabled={saving || !session.goalConfig.enabled}
-              onClick={() => submitGoalGuard(false, "Goal Guard 已停止，当前只保留配置不再自动续跑。")}
+              onClick={() => submitGoalGuard(false, "守卫已停止。")}
             >
-              停止守卫
+              停用
             </button>
             <button type="button" className="ghost-button" disabled={debugLoading} onClick={loadDebugInfo}>
-              {debugLoading ? "读取中..." : "查看调试快照"}
+              {debugLoading ? "读取中..." : "调试"}
             </button>
           </div>
           {debugInfo ? (
             <div className="goal-debug-panel">
-              <div className="session-meta">
-                以下调试信息按优先级展示：先看结构化事实，再看 terminal fallback，最后再看 tmux pane 差异。
-              </div>
+              <div className="session-meta">结构化事实优先，terminal 仅作辅助。</div>
               <div className="goal-debug-grid">
                 <div>守卫启用：{debugInfo.guardEnabled ? "是" : "否"}</div>
                 <div>当前状态：{guardDecisionStateLabel(debugInfo.guardDecisionState)}</div>
@@ -889,6 +941,8 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
                 <div>goalSpec：{debugInfo.goalSpec?.kind ?? "无"}</div>
                 <div>verificationSpec：{debugInfo.verificationSpec?.kind ?? "无"}</div>
                 <div>最近 receipt：{debugInfo.verificationReceipt?.status ?? "无"}</div>
+                <div>最近候选来源：{debugInfo.verificationReceipt?.candidateSource ?? "无"}</div>
+                <div>最近候选类型：{debugInfo.verificationReceipt?.candidateKind ?? "无"}</div>
                 <div>receipt 时间：{debugInfo.verificationReceipt ? formatTimestamp(debugInfo.verificationReceipt.createdAt) : "无"}</div>
                 <div>tmux 存在：{debugInfo.hasTmuxSession ? "是" : "否"}</div>
                 <div>自动续跑次数：{debugInfo.autoResumeCount}</div>
@@ -917,9 +971,6 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
                 <div>terminal 命中成功关键词：{debugInfo.matchedSuccessKeyword ?? "无"}</div>
                 <div>terminal 未完成信号：{debugInfo.matchedIncompleteSignals.join("、") || "无"}</div>
                 <div>pane 快照是否变化：{debugInfo.snapshotChanged ? "是" : "否"}</div>
-              </div>
-              <div className="session-meta">
-                下面先展示结构化 Codex 观察与 app-server 统一摘要，再展示原始辅助摘要和 terminal fallback。若结构化观察可用，应优先依据结构化时间线判断。
               </div>
               <label>
                 Codex 最近 assistant 消息
@@ -964,9 +1015,6 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
                   readOnly
                 />
               </label>
-              <div className="session-meta">
-                下面三个 app-server 原始摘要主要用于深度排查。日常先看上面的统一摘要即可，只有在需要定位是 notification、后台常驻连接还是 thread snapshot 哪一层异常时，再展开这些原始数据。
-              </div>
               <label>
                 app-server notification 摘要
                 <textarea
@@ -991,12 +1039,6 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
                   readOnly
                 />
               </label>
-              <div className="session-meta">
-                下面展示 terminal fallback 与 tmux pane 相关信息。这些内容现在主要用于辅助排查，而不是优先主判定。
-              </div>
-              <div className="session-meta">
-                下面展示的是守卫启动时记录的基线 pane 快照，以及当前 pane 快照的末尾对比。若这里只改了时间、spinner、状态字，你就能直接看出来。
-              </div>
               <label>
                 基线快照末尾
                 <textarea rows={8} value={debugInfo.baselineTailLines.join("\n")} readOnly />
@@ -1062,6 +1104,14 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
                 />
               </label>
               <label>
+                最近候选详情
+                <textarea
+                  rows={4}
+                  value={debugInfo.verificationReceipt?.candidateDetail ?? "暂无最近候选详情"}
+                  readOnly
+                />
+              </label>
+              <label>
                 terminal fallback 观察窗口
                 <textarea
                   rows={10}
@@ -1071,7 +1121,7 @@ export function GoalGuardEditor({ token, session, onUpdated }: GoalGuardEditorPr
               </label>
             </div>
           ) : null}
-          {dirty ? <div className="session-meta">你有未保存的修改。</div> : null}
+          {dirty ? <div className="session-meta">有未保存修改。</div> : null}
           {error ? <div className="error-banner inline-banner">{error}</div> : null}
           {savedNotice ? <div className="success-banner inline-banner">{savedNotice}</div> : null}
         </div>

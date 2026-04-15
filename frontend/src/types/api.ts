@@ -1,4 +1,7 @@
 export type RuntimeMode = "single" | "hub" | "node";
+export type InterfaceOwner = "portal" | "node" | "shared";
+export type InterfacePlane = "control" | "data";
+export type InterfaceAccessMode = "portal_only" | "node_first_read" | "gateway_first_write" | "gateway_only";
 
 export type SessionMode = "new" | "resume" | "fork";
 
@@ -97,6 +100,17 @@ export interface AppServerNotificationSummary {
   latestReceivedAt: number | null;
 }
 
+export interface InterfaceCatalogEntry {
+  id: string;
+  method: "GET" | "POST" | "PUT" | "DELETE" | "WS";
+  path: string;
+  owner: InterfaceOwner;
+  plane: InterfacePlane;
+  accessMode: InterfaceAccessMode;
+  summary: string;
+  currentStatus: string;
+}
+
 export interface AppServerNotificationManagerSummary {
   active: boolean;
   connected: boolean;
@@ -157,6 +171,9 @@ export interface VerificationReceipt {
   sessionId: string;
   status: VerificationReceiptStatus;
   verificationKind: VerificationKind;
+  candidateSource?: "terminal_signal" | "codex_assistant_message";
+  candidateKind?: SuccessEvidenceKind;
+  candidateDetail?: string;
   passed: boolean;
   detail: string;
   exitCode: number | null;
@@ -322,6 +339,12 @@ export interface SessionSummary {
   goalConfig: GoalGuardConfig;
   hasTmuxSession: boolean;
   choiceOverlay: ChoiceOverlay;
+  tmuxCopyModeActive: boolean;
+  tmuxViewStateUpdatedAt: number | null;
+  activeViewerCount: number;
+  runtimeContextState: "live" | "tmux_resynced" | "persisted_only";
+  runtimeContextDetail: string | null;
+  runtimeContextUpdatedAt: number | null;
 }
 
 export interface HistoryConversationSummary {
@@ -342,6 +365,9 @@ export interface NodeSummary {
   id: string;
   label: string;
   baseUrl: string;
+  directHttpBaseUrl: string | null;
+  directWsBaseUrl: string | null;
+  directAccessReady: boolean;
   status: "online" | "offline";
   runtimeMode: RuntimeMode | "unknown";
   roots: WorkspaceEntry[];

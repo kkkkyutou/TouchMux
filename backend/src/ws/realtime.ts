@@ -52,6 +52,17 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
     }
   }
 
+  async function sendFreshHubSnapshot(ws: WebSocket): Promise<void> {
+    try {
+      await refreshHubSnapshot();
+    } catch {
+      // fall back to the latest cached snapshot below
+    }
+    if (ws.readyState === ws.OPEN) {
+      ws.send(hubSnapshotPayload);
+    }
+  }
+
   if (config.runtimeMode === "hub") {
     void refreshHubSnapshot().catch(() => undefined);
     setInterval(() => {
@@ -115,7 +126,7 @@ export function setupRealtime(server: Server, appRuntime: AppRuntime): { refresh
 
   eventWss.on("connection", (ws) => {
     if (config.runtimeMode === "hub") {
-      ws.send(hubSnapshotPayload);
+      void sendFreshHubSnapshot(ws);
       return;
     }
     ws.send(

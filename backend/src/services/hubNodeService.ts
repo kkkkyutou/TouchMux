@@ -9,6 +9,7 @@ import type {
   WorkspaceEntry,
 } from "../types/models.js";
 import { createNodeRequestHeaders } from "../utils/security.js";
+import { resolveNodeDirectAccess } from "../utils/nodeAccess.js";
 
 interface JsonMessage {
   message?: string;
@@ -90,10 +91,12 @@ export class HubNodeService {
             { method: "GET" },
             "节点能力读取失败",
           );
+          const directAccess = resolveNodeDirectAccess(node);
           return {
             id: node.id,
             label: node.label,
             baseUrl: node.baseUrl,
+            ...directAccess,
             status: "online",
             runtimeMode: capabilities.runtimeMode ?? "unknown",
             roots: capabilities.workspaceRoots ?? [],
@@ -101,10 +104,12 @@ export class HubNodeService {
             lastCheckedAt: startedAt,
           } satisfies NodeSummary;
         } catch (error) {
+          const directAccess = resolveNodeDirectAccess(node);
           return {
             id: node.id,
             label: node.label,
             baseUrl: node.baseUrl,
+            ...directAccess,
             status: "offline",
             runtimeMode: "unknown",
             roots: [],

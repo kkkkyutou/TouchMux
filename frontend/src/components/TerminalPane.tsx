@@ -7,6 +7,10 @@ interface TerminalPaneProps {
   token: string;
   nodeId: string | null;
   sessionId: string | null;
+  wsBaseUrl: string | null;
+  fallbackWsBaseUrl: string | null;
+  preferDirectConnection: boolean;
+  blockedReason?: string | null;
   copyModeEnabled: boolean;
   inputLocked: boolean;
   onReady: (sender: ((text: string) => void) | null) => void;
@@ -14,13 +18,26 @@ interface TerminalPaneProps {
     handler: ((action: "enter" | "page_up" | "page_down" | "line_up" | "line_down" | "exit") => void) | null,
   ) => void;
   onError: (message: string) => void;
+  onConnectionPathChange?: (state: {
+    phase: "connecting" | "open" | "reconnecting" | "blocked";
+    activePath: "direct" | "gateway";
+    retryCount: number;
+    fellBackToGateway: boolean;
+    fallbackReasonCode: "direct_socket_error_before_open" | "direct_closed_before_open" | null;
+    fallbackReason: string | null;
+    reconnectReasonCode: "socket_error_after_open" | "closed_after_open" | null;
+    reconnectReason: string | null;
+    blockedReason: string | null;
+  }) => void;
 }
 
 type TmuxCopyModeAction = "enter" | "page_up" | "page_down" | "line_up" | "line_down" | "exit";
+const maxTerminalReconnectAttempts = 6;
 
 function resolveTerminalFontSize(): number {
-  const width = window.innerWidth;
-  const height = window.innerHeight;
+  const viewport = window.visualViewport;
+  const width = Math.round(viewport?.width ?? window.innerWidth);
+  const height = Math.round(viewport?.height ?? window.innerHeight);
   const isPortraitMobile = width <= 720 && height > width;
   if (isPortraitMobile) {
     return Math.max(13, Math.min(16, Math.floor(width / 23)));
@@ -31,15 +48,37 @@ function resolveTerminalFontSize(): number {
   return 14;
 }
 
+function resolveSafeTerminalGeometry(terminal: Terminal): { cols: number; rows: number } {
+  return {
+    cols: Math.max(terminal.cols || 0, 20),
+    rows: Math.max(terminal.rows || 0, 6),
+  };
+}
+
+function isNarrowMobileViewport(): boolean {
+  const viewport = window.visualViewport;
+  const width = Math.round(viewport?.width ?? window.innerWidth);
+  return width <= 720;
+}
+
+function normalizePlainTextPaste(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 export function TerminalPane({
   token,
   nodeId,
   sessionId,
+  wsBaseUrl,
+  fallbackWsBaseUrl,
+  preferDirectConnection,
+  blockedReason,
   copyModeEnabled,
   inputLocked,
   onReady,
   onTmuxCopyModeReady,
   onError,
+  onConnectionPathChange,
 }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -50,6 +89,10 @@ export function TerminalPane({
   const copyModeEnabledRef = useRef(copyModeEnabled);
   const inputLockedRef = useRef(inputLocked);
   const recentManualPasteRef = useRef<{ text: string; at: number } | null>(null);
+  const onConnectionPathChangeRef = useRef(onConnectionPathChange);
+  const terminalFailureReasonRef = useRef<string | null>(null);
+  const pendingWriteBufferRef = useRef<string[]>([]);
+  const writeFlushFrameRef = useRef<number | null>(null);
 
   const sendInputToTerminal = (text: string) => {
     if (inputLockedRef.current || text.length === 0) {
@@ -71,7 +114,7 @@ export function TerminalPane({
     if (!terminal) {
       return;
     }
-      terminal.options.disableStdin = inputLocked;
+    terminal.options.disableStdin = inputLocked;
     if (inputLocked) {
       const activeElement = document.activeElement;
       if (activeElement instanceof HTMLElement) {
@@ -81,8 +124,12 @@ export function TerminalPane({
   }, [inputLocked]);
 
   useEffect(() => {
+    onConnectionPathChangeRef.current = onConnectionPathChange;
+  }, [onConnectionPathChange]);
+
+  useEffect(() => {
     const terminal = new Terminal({
-      convertEol: true,
+      convertEol: false,
       cursorBlink: true,
       disableStdin: inputLocked,
       fontFamily:
@@ -120,6 +167,29 @@ export function TerminalPane({
     terminal.loadAddon(fitAddon);
     terminalRef.current = terminal;
     fitRef.current = fitAddon;
+    const clearPendingWrites = () => {
+      pendingWriteBufferRef.current = [];
+      if (writeFlushFrameRef.current !== null) {
+        window.cancelAnimationFrame(writeFlushFrameRef.current);
+        writeFlushFrameRef.current = null;
+      }
+    };
+    const flushPendingWrites = () => {
+      writeFlushFrameRef.current = null;
+      if (pendingWriteBufferRef.current.length === 0) {
+        return;
+      }
+      const payload = pendingWriteBufferRef.current.join("");
+      pendingWriteBufferRef.current = [];
+      terminal.write(payload);
+    };
+    const scheduleWrite = (chunk: string) => {
+      pendingWriteBufferRef.current.push(chunk);
+      if (writeFlushFrameRef.current !== null) {
+        return;
+      }
+      writeFlushFrameRef.current = window.requestAnimationFrame(flushPendingWrites);
+    };
     terminal.attachCustomKeyEventHandler((event) => {
       const modifierPressed = event.ctrlKey || event.metaKey;
       if (!modifierPressed) {
@@ -140,34 +210,150 @@ export function TerminalPane({
       terminal.open(hostRef.current);
       fitAddon.fit();
     }
+    let viewportSyncFrame: number | null = null;
+    let delayedViewportSyncTimer: number | null = null;
+    let softRefreshFrame: number | null = null;
+    let delayedSoftRefreshTimer: number | null = null;
+    let lastObservedHostWidth = 0;
+    let lastObservedHostHeight = 0;
+    let lastSentCols = 0;
+    let lastSentRows = 0;
+    let lastSentFontSize = 0;
+    let lastDevicePixelRatio = window.devicePixelRatio || 1;
+
+    const clearViewportSync = () => {
+      if (viewportSyncFrame !== null) {
+        window.cancelAnimationFrame(viewportSyncFrame);
+        viewportSyncFrame = null;
+      }
+      if (delayedViewportSyncTimer !== null) {
+        window.clearTimeout(delayedViewportSyncTimer);
+        delayedViewportSyncTimer = null;
+      }
+      if (softRefreshFrame !== null) {
+        window.cancelAnimationFrame(softRefreshFrame);
+        softRefreshFrame = null;
+      }
+      if (delayedSoftRefreshTimer !== null) {
+        window.clearTimeout(delayedSoftRefreshTimer);
+        delayedSoftRefreshTimer = null;
+      }
+    };
+
+    const refreshTerminalSurface = () => {
+      terminal.refresh(0, Math.max(terminal.rows - 1, 0));
+    };
+
+    const scheduleSoftRefresh = (withFit = false) => {
+      if (softRefreshFrame !== null) {
+        return;
+      }
+      softRefreshFrame = window.requestAnimationFrame(() => {
+        softRefreshFrame = null;
+        if (withFit) {
+          fitAddon.fit();
+        }
+        refreshTerminalSurface();
+      });
+      if (delayedSoftRefreshTimer !== null) {
+        window.clearTimeout(delayedSoftRefreshTimer);
+      }
+      delayedSoftRefreshTimer = window.setTimeout(() => {
+        delayedSoftRefreshTimer = null;
+        if (withFit) {
+          fitAddon.fit();
+        }
+        refreshTerminalSurface();
+      }, 140);
+    };
+
     const syncTerminalViewport = () => {
-      terminal.options.fontSize = resolveTerminalFontSize();
+      const host = hostRef.current;
+      if (!host) {
+        return;
+      }
+      const nextFontSize = resolveTerminalFontSize();
+      const width = Math.round(host.clientWidth);
+      const height = Math.round(host.clientHeight);
+      const nextDevicePixelRatio = window.devicePixelRatio || 1;
+      if (width <= 0 || height <= 0) {
+        return;
+      }
+      if (
+        width === lastObservedHostWidth
+        && height === lastObservedHostHeight
+        && nextFontSize === lastSentFontSize
+        && nextDevicePixelRatio === lastDevicePixelRatio
+      ) {
+        return;
+      }
+      lastObservedHostWidth = width;
+      lastObservedHostHeight = height;
+      lastDevicePixelRatio = nextDevicePixelRatio;
+      terminal.options.fontSize = nextFontSize;
       fitAddon.fit();
+      refreshTerminalSurface();
+      window.requestAnimationFrame(() => {
+        refreshTerminalSurface();
+      });
       const socket = socketRef.current;
-      if (socket?.readyState === WebSocket.OPEN) {
+      const { cols, rows } = resolveSafeTerminalGeometry(terminal);
+      lastSentFontSize = nextFontSize;
+      if (socket?.readyState === WebSocket.OPEN && (cols !== lastSentCols || rows !== lastSentRows)) {
+        lastSentCols = cols;
+        lastSentRows = rows;
         socket.send(
           JSON.stringify({
             type: "resize",
-            cols: terminal.cols,
-            rows: terminal.rows,
+            cols,
+            rows,
           }),
         );
       }
     };
-    const scheduleViewportSync = () => {
-      syncTerminalViewport();
-      window.requestAnimationFrame(syncTerminalViewport);
-      window.setTimeout(syncTerminalViewport, 120);
-      window.setTimeout(syncTerminalViewport, 320);
+    const scheduleViewportSync = (withDelayedFollowup = false) => {
+      if (viewportSyncFrame !== null) {
+        return;
+      }
+      viewportSyncFrame = window.requestAnimationFrame(() => {
+        viewportSyncFrame = null;
+        syncTerminalViewport();
+      });
+      if (withDelayedFollowup) {
+        if (delayedViewportSyncTimer !== null) {
+          window.clearTimeout(delayedViewportSyncTimer);
+        }
+        delayedViewportSyncTimer = window.setTimeout(() => {
+          delayedViewportSyncTimer = null;
+          syncTerminalViewport();
+        }, 180);
+      }
     };
-    const resizeObserver = new ResizeObserver(() => {
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      const width = Math.round(entry?.contentRect.width ?? 0);
+      const height = Math.round(entry?.contentRect.height ?? 0);
+      if (width === lastObservedHostWidth && height === lastObservedHostHeight) {
+        return;
+      }
       scheduleViewportSync();
     });
     if (hostRef.current) {
       resizeObserver.observe(hostRef.current);
     }
-    window.addEventListener("resize", scheduleViewportSync);
-    window.addEventListener("orientationchange", scheduleViewportSync);
+    const handleWindowResize = () => {
+      scheduleViewportSync();
+    };
+    const handleOrientationChange = () => {
+      scheduleViewportSync(true);
+    };
+    const handleVisualViewportChange = () => {
+      scheduleViewportSync(true);
+    };
+    window.addEventListener("resize", handleWindowResize);
+    window.addEventListener("orientationchange", handleOrientationChange);
+    window.visualViewport?.addEventListener("resize", handleVisualViewportChange);
+    window.visualViewport?.addEventListener("scroll", handleVisualViewportChange);
     const onPaste = (event: ClipboardEvent) => {
       const host = hostRef.current;
       if (!host || !host.contains(document.activeElement)) {
@@ -178,8 +364,12 @@ export function TerminalPane({
         return;
       }
       event.preventDefault();
-      recentManualPasteRef.current = { text, at: Date.now() };
-      sendInputToTerminal(text);
+      const plainText = normalizePlainTextPaste(text);
+      recentManualPasteRef.current = { text: plainText, at: Date.now() };
+      sendInputToTerminal(plainText);
+      if (isNarrowMobileViewport()) {
+        scheduleSoftRefresh(true);
+      }
     };
     const onKeyDownCapture = (event: KeyboardEvent) => {
       const host = hostRef.current;
@@ -196,8 +386,12 @@ export function TerminalPane({
         if (!text) {
           return;
         }
-        recentManualPasteRef.current = { text, at: Date.now() };
-        sendInputToTerminal(text);
+        const plainText = normalizePlainTextPaste(text);
+        recentManualPasteRef.current = { text: plainText, at: Date.now() };
+        sendInputToTerminal(plainText);
+        if (isNarrowMobileViewport()) {
+          scheduleSoftRefresh(true);
+        }
       }).catch(() => undefined);
     };
     const onCopy = (event: ClipboardEvent) => {
@@ -216,16 +410,38 @@ export function TerminalPane({
     hostRef.current?.addEventListener("paste", onPaste as EventListener, true);
     hostRef.current?.addEventListener("keydown", onKeyDownCapture as EventListener, true);
     document.addEventListener("copy", onCopy);
+    const helperTextarea = hostRef.current?.querySelector(".xterm-helper-textarea");
+    const handleHelperInput = () => {
+      if (isNarrowMobileViewport()) {
+        scheduleSoftRefresh(true);
+      }
+    };
+    if (helperTextarea instanceof HTMLTextAreaElement) {
+      helperTextarea.addEventListener("beforeinput", handleHelperInput);
+      helperTextarea.addEventListener("input", handleHelperInput);
+      helperTextarea.addEventListener("keyup", handleHelperInput);
+      helperTextarea.addEventListener("compositionend", handleHelperInput);
+    }
 
     return () => {
+      clearViewportSync();
       resizeObserver.disconnect();
-      window.removeEventListener("resize", scheduleViewportSync);
-      window.removeEventListener("orientationchange", scheduleViewportSync);
+      window.removeEventListener("resize", handleWindowResize);
+      window.removeEventListener("orientationchange", handleOrientationChange);
+      window.visualViewport?.removeEventListener("resize", handleVisualViewportChange);
+      window.visualViewport?.removeEventListener("scroll", handleVisualViewportChange);
       hostRef.current?.removeEventListener("paste", onPaste as EventListener, true);
       hostRef.current?.removeEventListener("keydown", onKeyDownCapture as EventListener, true);
       document.removeEventListener("copy", onCopy);
+      if (helperTextarea instanceof HTMLTextAreaElement) {
+        helperTextarea.removeEventListener("beforeinput", handleHelperInput);
+        helperTextarea.removeEventListener("input", handleHelperInput);
+        helperTextarea.removeEventListener("keyup", handleHelperInput);
+        helperTextarea.removeEventListener("compositionend", handleHelperInput);
+      }
       onReady(null);
       onTmuxCopyModeReady(null);
+      clearPendingWrites();
       socketRef.current?.close();
       terminal.dispose();
       terminalRef.current = null;
@@ -256,22 +472,54 @@ export function TerminalPane({
     }
 
     terminal.reset();
+    pendingWriteBufferRef.current = [];
+    if (writeFlushFrameRef.current !== null) {
+      window.cancelAnimationFrame(writeFlushFrameRef.current);
+      writeFlushFrameRef.current = null;
+    }
     socketRef.current?.close();
     onReady(null);
+    terminalFailureReasonRef.current = null;
 
     if (!sessionId || !nodeId) {
       terminal.writeln("请选择左侧会话，或新建一个 Codex/tmux 会话。");
       return;
     }
 
+    if (blockedReason) {
+      onConnectionPathChangeRef.current?.({
+        phase: "blocked",
+        activePath: "gateway",
+        retryCount: 0,
+        fellBackToGateway: false,
+        fallbackReasonCode: null,
+        fallbackReason: null,
+        reconnectReasonCode: null,
+        reconnectReason: null,
+        blockedReason,
+      });
+      terminal.writeln(`[连接已阻止] ${blockedReason}`);
+      return;
+    }
+
     fitAddon.fit();
-    const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const socketUrl = `${protocol}://${location.host}/ws/terminal?token=${encodeURIComponent(
-      token,
-    )}&sessionId=${encodeURIComponent(sessionId)}&nodeId=${encodeURIComponent(nodeId)}&cols=${terminal.cols}&rows=${terminal.rows}`;
+    const gatewayWsOrigin = fallbackWsBaseUrl?.replace(/\/$/, "") ?? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
+    const directWsOrigin = wsBaseUrl?.replace(/\/$/, "") ?? null;
+    const preferredOrigins =
+      preferDirectConnection && directWsOrigin && directWsOrigin !== gatewayWsOrigin
+        ? [directWsOrigin, gatewayWsOrigin]
+        : [directWsOrigin ?? gatewayWsOrigin];
     let disposed = false;
     let retryCount = 0;
     let retryTimer: number | null = null;
+    let activeOriginIndex = 0;
+    let currentConnectionOpened = false;
+    let fellBackToGateway = false;
+    let directFailureReasonCode: "direct_socket_error_before_open" | "direct_closed_before_open" | null = null;
+    let directFailureReason: string | null = null;
+    let reconnectReasonCode: "socket_error_after_open" | "closed_after_open" | null = null;
+    let reconnectReason: string | null = null;
+    let sawSocketError = false;
 
     const clearRetryTimer = () => {
       if (retryTimer !== null) {
@@ -280,18 +528,57 @@ export function TerminalPane({
       }
     };
 
+    const buildSocketUrl = (origin: string) => {
+      const { cols, rows } = resolveSafeTerminalGeometry(terminal);
+      return `${origin}/ws/terminal?token=${encodeURIComponent(token)}&sessionId=${encodeURIComponent(sessionId)}&nodeId=${encodeURIComponent(
+        nodeId,
+      )}&cols=${cols}&rows=${rows}`;
+    };
+
+    const emitConnectionState = (phase: "connecting" | "open" | "reconnecting") => {
+      const activeOrigin = preferredOrigins[activeOriginIndex] ?? gatewayWsOrigin;
+      onConnectionPathChangeRef.current?.({
+        phase,
+        activePath: activeOrigin === gatewayWsOrigin ? "gateway" : "direct",
+        retryCount,
+        fellBackToGateway,
+        fallbackReasonCode: fellBackToGateway ? directFailureReasonCode : null,
+        fallbackReason: fellBackToGateway ? directFailureReason : null,
+        reconnectReasonCode: phase === "reconnecting" ? reconnectReasonCode : null,
+        reconnectReason: phase === "reconnecting" ? reconnectReason : null,
+        blockedReason: null,
+      });
+    };
+
     const connect = () => {
       if (disposed) {
         return;
       }
-      const socket = new WebSocket(socketUrl);
+      currentConnectionOpened = false;
+      sawSocketError = false;
+      emitConnectionState(retryCount === 0 ? "connecting" : "reconnecting");
+      const socket = new WebSocket(buildSocketUrl(preferredOrigins[activeOriginIndex] ?? gatewayWsOrigin));
       socketRef.current = socket;
 
       socket.onopen = () => {
+        currentConnectionOpened = true;
+        reconnectReasonCode = null;
+        reconnectReason = null;
+        emitConnectionState("open");
         retryCount = 0;
         fitAddon.fit();
         window.requestAnimationFrame(() => fitAddon.fit());
         window.setTimeout(() => fitAddon.fit(), 140);
+        if (isNarrowMobileViewport()) {
+          window.requestAnimationFrame(() => {
+            fitAddon.fit();
+            terminal.refresh(0, Math.max(terminal.rows - 1, 0));
+          });
+          window.setTimeout(() => {
+            fitAddon.fit();
+            terminal.refresh(0, Math.max(terminal.rows - 1, 0));
+          }, 140);
+        }
         onReady((text) => {
           const current = socketRef.current;
           if (current?.readyState !== WebSocket.OPEN) {
@@ -312,14 +599,37 @@ export function TerminalPane({
         }
       };
 
+      socket.onerror = () => {
+        sawSocketError = true;
+      };
+
       socket.onmessage = (event) => {
         const message = JSON.parse(event.data) as { type: string; payload?: string };
         if (message.type === "data" && typeof message.payload === "string") {
-          terminal.write(message.payload);
+          pendingWriteBufferRef.current.push(message.payload);
+          if (writeFlushFrameRef.current === null) {
+            writeFlushFrameRef.current = window.requestAnimationFrame(() => {
+              writeFlushFrameRef.current = null;
+              if (pendingWriteBufferRef.current.length === 0) {
+                return;
+              }
+              const payload = pendingWriteBufferRef.current.join("");
+              pendingWriteBufferRef.current = [];
+              terminal.write(payload);
+              if (isNarrowMobileViewport()) {
+                window.requestAnimationFrame(() => {
+                  terminal.refresh(0, Math.max(terminal.rows - 1, 0));
+                });
+              }
+            });
+          }
         }
         if (message.type === "error" && typeof message.payload === "string") {
+          terminalFailureReasonRef.current = message.payload;
           onError(message.payload);
           terminal.writeln(`\r\n[错误] ${message.payload}`);
+          currentConnectionOpened = false;
+          socket.close();
         }
       };
 
@@ -329,7 +639,62 @@ export function TerminalPane({
         }
         onReady(null);
         onTmuxCopyModeReady(null);
+        if (!currentConnectionOpened && activeOriginIndex < preferredOrigins.length - 1) {
+          const activeOrigin = preferredOrigins[activeOriginIndex] ?? gatewayWsOrigin;
+          directFailureReasonCode =
+            activeOrigin === gatewayWsOrigin
+              ? null
+              : sawSocketError
+                ? "direct_socket_error_before_open"
+                : "direct_closed_before_open";
+          directFailureReason =
+            directFailureReasonCode === "direct_socket_error_before_open"
+              ? "直连握手或网络连接失败"
+              : directFailureReasonCode === "direct_closed_before_open"
+                ? "直连在建立前被关闭"
+                : null;
+          activeOriginIndex += 1;
+          fellBackToGateway = true;
+          connect();
+          return;
+        }
+        reconnectReasonCode = sawSocketError ? "socket_error_after_open" : "closed_after_open";
+        reconnectReason =
+          reconnectReasonCode === "socket_error_after_open"
+            ? "已建立连接后出现 socket 错误，正在重连。"
+            : "已建立连接后被关闭，正在重连。";
+        const terminalFailureReason = terminalFailureReasonRef.current;
+        if (terminalFailureReason) {
+          onConnectionPathChangeRef.current?.({
+            phase: "blocked",
+            activePath: (preferredOrigins[activeOriginIndex] ?? gatewayWsOrigin) === gatewayWsOrigin ? "gateway" : "direct",
+            retryCount,
+            fellBackToGateway,
+            fallbackReasonCode: fellBackToGateway ? directFailureReasonCode : null,
+            fallbackReason: fellBackToGateway ? directFailureReason : null,
+            reconnectReasonCode,
+            reconnectReason,
+            blockedReason: terminalFailureReason,
+          });
+          return;
+        }
         retryCount += 1;
+        if (retryCount > maxTerminalReconnectAttempts) {
+          const blockedReason = `${reconnectReason ?? "终端连接反复中断。"} 已达到最大自动重试次数，请重新选择会话或稍后再试。`;
+          onConnectionPathChangeRef.current?.({
+            phase: "blocked",
+            activePath: (preferredOrigins[activeOriginIndex] ?? gatewayWsOrigin) === gatewayWsOrigin ? "gateway" : "direct",
+            retryCount,
+            fellBackToGateway,
+            fallbackReasonCode: fellBackToGateway ? directFailureReasonCode : null,
+            fallbackReason: fellBackToGateway ? directFailureReason : null,
+            reconnectReasonCode,
+            reconnectReason,
+            blockedReason,
+          });
+          terminal.writeln(`\r\n[连接已停止重试] ${blockedReason}`);
+          return;
+        }
         const retryDelayMs = Math.min(1000 * 2 ** Math.min(retryCount - 1, 3), 8000);
         retryTimer = window.setTimeout(connect, retryDelayMs);
       };
@@ -355,9 +720,25 @@ export function TerminalPane({
       clearRetryTimer();
       disposable.dispose();
       onTmuxCopyModeReady(null);
+      if (writeFlushFrameRef.current !== null) {
+        window.cancelAnimationFrame(writeFlushFrameRef.current);
+        writeFlushFrameRef.current = null;
+      }
+      pendingWriteBufferRef.current = [];
       socketRef.current?.close();
     };
-  }, [sessionId, nodeId, token, onReady, onTmuxCopyModeReady, onError]);
+  }, [
+    sessionId,
+    nodeId,
+    token,
+    wsBaseUrl,
+    fallbackWsBaseUrl,
+    preferDirectConnection,
+    blockedReason,
+    onReady,
+    onTmuxCopyModeReady,
+    onError,
+  ]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -365,6 +746,14 @@ export function TerminalPane({
       return;
     }
     const onFocusIn = () => {
+      fitRef.current?.fit();
+      terminalRef.current?.refresh(0, Math.max((terminalRef.current?.rows ?? 1) - 1, 0));
+      if (isNarrowMobileViewport()) {
+        window.setTimeout(() => {
+          fitRef.current?.fit();
+          terminalRef.current?.refresh(0, Math.max((terminalRef.current?.rows ?? 1) - 1, 0));
+        }, 140);
+      }
       if (window.innerWidth > 720) {
         return;
       }
@@ -380,6 +769,11 @@ export function TerminalPane({
     };
     host.addEventListener("focusin", onFocusIn);
     const pixelsPerLine = 22;
+    const wheelFlushIntervalMs = 48;
+    const maxWheelLinesPerFlush = 6;
+    let wheelFlushTimer: number | null = null;
+    let pendingWheelDirection: "line_up" | "line_down" | null = null;
+    let pendingWheelLines = 0;
     const sendScrollLines = (action: "line_up" | "line_down", lineCount: number) => {
       const current = socketRef.current;
       if (current?.readyState !== WebSocket.OPEN) {
@@ -393,6 +787,30 @@ export function TerminalPane({
           repeat: safeCount,
         }),
       );
+    };
+    const clearWheelQueue = () => {
+      pendingWheelDirection = null;
+      pendingWheelLines = 0;
+      if (wheelFlushTimer !== null) {
+        window.clearTimeout(wheelFlushTimer);
+        wheelFlushTimer = null;
+      }
+    };
+    const flushWheelQueue = () => {
+      wheelFlushTimer = null;
+      if (!pendingWheelDirection || pendingWheelLines <= 0) {
+        pendingWheelDirection = null;
+        pendingWheelLines = 0;
+        return;
+      }
+      const linesToSend = Math.min(pendingWheelLines, maxWheelLinesPerFlush);
+      pendingWheelLines -= linesToSend;
+      sendScrollLines(pendingWheelDirection, linesToSend);
+      if (pendingWheelLines > 0) {
+        wheelFlushTimer = window.setTimeout(flushWheelQueue, wheelFlushIntervalMs);
+      } else {
+        pendingWheelDirection = null;
+      }
     };
     const onTouchStart = (event: TouchEvent) => {
       if (!copyModeEnabled || event.touches.length === 0) {
@@ -428,6 +846,7 @@ export function TerminalPane({
     const onWheel = (event: WheelEvent) => {
       if (!copyModeEnabled) {
         wheelCarryRef.current = 0;
+        clearWheelQueue();
         return;
       }
       event.preventDefault();
@@ -441,7 +860,14 @@ export function TerminalPane({
         direction === "line_down"
           ? wheelCarryRef.current - lines * pixelsPerLine
           : wheelCarryRef.current + lines * pixelsPerLine;
-      sendScrollLines(direction, lines);
+      if (pendingWheelDirection && pendingWheelDirection !== direction) {
+        clearWheelQueue();
+      }
+      pendingWheelDirection = direction;
+      pendingWheelLines = Math.min(pendingWheelLines + lines, maxWheelLinesPerFlush * 2);
+      if (wheelFlushTimer === null) {
+        wheelFlushTimer = window.setTimeout(flushWheelQueue, wheelFlushIntervalMs);
+      }
     };
 
     host.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -456,6 +882,7 @@ export function TerminalPane({
       host.removeEventListener("touchend", onTouchEnd);
       host.removeEventListener("touchcancel", onTouchEnd);
       host.removeEventListener("wheel", onWheel);
+      clearWheelQueue();
     };
   }, [copyModeEnabled]);
 

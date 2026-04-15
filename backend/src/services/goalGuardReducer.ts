@@ -125,38 +125,13 @@ export function buildGoalGuardEvents(input: GoalGuardReductionInput): GoalGuardE
     events.push({
       type: "codex_candidate_success",
       candidateKind: "codex_assistant_message",
-      detail: "检测到 Codex 结构化 assistant message 中的独立 SUCCESS 成功标记，开始执行 verifier。",
-    });
-  } else if (
-    codexObservation.available
-    && codexObservation.matchedIncompleteSignals.length === 0
-    && codexObservation.matchedSuccessKeyword
-  ) {
-    events.push({
-      type: "codex_candidate_success",
-      candidateKind: "success_keyword",
-      detail: `检测到 Codex 结构化 assistant message 中的成功关键词：${codexObservation.matchedSuccessKeyword}，开始执行 verifier。`,
+      detail: "检测到 Codex 结构化 assistant message 中的独立成功关键词命中，开始执行 verifier。",
     });
   }
   if (allowTerminalFallback && !terminalDiagnostics.matchedStandaloneSuccess && terminalDiagnostics.matchedIncompleteSignals.length > 0) {
     events.push({
       type: "terminal_incomplete_signal",
       labels: terminalDiagnostics.matchedIncompleteSignals,
-    });
-  }
-  if (allowTerminalFallback && terminalDiagnostics.matchedStandaloneSuccess) {
-    events.push({
-      type: "terminal_candidate_success",
-      candidateKind: "standalone_success",
-      detail: "检测到 checkpoint 之后 terminal_output 事件中的独立 SUCCESS 成功标记，开始执行 verifier。",
-      eventSeq: terminalDiagnostics.evidenceEventSeq,
-    });
-  } else if (allowTerminalFallback && terminalDiagnostics.matchedSuccessKeyword) {
-    events.push({
-      type: "terminal_candidate_success",
-      candidateKind: "success_keyword",
-      detail: `检测到 checkpoint 之后 terminal_output 事件中的成功关键词：${terminalDiagnostics.matchedSuccessKeyword}，开始执行 verifier。`,
-      eventSeq: terminalDiagnostics.evidenceEventSeq,
     });
   }
 
@@ -206,31 +181,6 @@ export function reduceGoalGuardEvents(input: GoalGuardReductionInput): GoalGuard
     };
   }
 
-  const terminalCandidate = events.find((event) => event.type === "terminal_candidate_success");
-  if (terminalCandidate && terminalCandidate.type === "terminal_candidate_success") {
-    if (
-      !input.hasKeywordRule
-      && input.verificationKind !== "command_check"
-      && terminalCandidate.candidateKind !== "standalone_success"
-    ) {
-      return {
-        nextState: null,
-        fatalReason: null,
-        candidate: null,
-      };
-    }
-    return {
-      nextState: "verifying",
-      fatalReason: null,
-      candidate: {
-        source: "terminal_signal",
-        kind: terminalCandidate.candidateKind,
-        detail: terminalCandidate.detail,
-        eventSeq: terminalCandidate.eventSeq,
-      },
-    };
-  }
-
   return {
     nextState: null,
     fatalReason: null,
@@ -250,8 +200,8 @@ export function reduceGoalGuardVerificationResult(
   }
   if (receipt.verificationKind === "candidate_signal") {
     return {
-      nextState: "blocked_by_missing_verifier",
-      reason: receipt.detail,
+      nextState: "waiting_for_idle",
+      reason: `${receipt.detail} 守卫不会确认成功，但会继续等待新的有效进展或后续自动续跑。`,
       keepPreviousSuccessEvidence: true,
     };
   }

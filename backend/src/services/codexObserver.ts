@@ -60,6 +60,9 @@ const fatalErrorPatterns = [
   /exceeded retry limit/i,
   /last status:\s*429\b/i,
   /\b429 Too Many Requests\b/i,
+  /unexpected status\s*403\b.*\/v1\/responses\b/i,
+  /\b403 Forbidden\b.*\/v1\/responses\b/i,
+  /service error,\s*please retry.*\/v1\/responses\b/i,
   /rate limit(ed|ing)?/i,
   /quota exceeded/i,
   /insufficient[_ ]quota/i,
@@ -209,24 +212,15 @@ export class CodexObserver {
     const successCandidateMessages = preferredMessages.length > 0 ? preferredMessages : assistantMessages;
     const successText = successCandidateMessages.map((message) => message.text).join("\n");
     const allAssistantText = assistantMessages.map((message) => message.text).join("\n");
-    const fatalErrorFloor = parsed.currentTurnStartedAt ?? sinceTimestamp;
-    const fatalRelevantErrors = errors.filter((entry) => (fatalErrorFloor === null ? true : entry.timestamp >= fatalErrorFloor));
+    // Guard restarts must only consider Codex fatal errors observed after the new
+    // activation checkpoint. Reusing currentTurnStartedAt here would leak older
+    // errors from a still-running turn into the new guard run.
+    const fatalRelevantErrors = errors.filter((entry) => (sinceTimestamp === null ? true : entry.timestamp >= sinceTimestamp));
     const matchedStandaloneSuccess = hasStandaloneSuccessMarker(successText, options.goalConfig);
-    const matchedSuccessKeyword = options.goalConfig
-      ? options.goalConfig.successKeywords.find((keyword) =>
-          compactGoalText(successText).toLowerCase().includes(compactGoalText(keyword).toLowerCase()),
-        ) ?? null
-      : null;
+    const matchedSuccessKeyword = null;
     const matchedIncompleteSignals = findIncompleteProgressSignals(allAssistantText);
     const successMessageRecord =
       successCandidateMessages.find((message) => hasStandaloneSuccessMarker(message.text, options.goalConfig)) ??
-      successCandidateMessages.find((message) =>
-        options.goalConfig
-          ? options.goalConfig.successKeywords.some((keyword) =>
-              compactGoalText(message.text).toLowerCase().includes(compactGoalText(keyword).toLowerCase()),
-            )
-          : false,
-      ) ??
       null;
     const fatalError = fatalRelevantErrors.map((entry) => entry.message).find((message) =>
       fatalErrorPatterns.some((pattern) => pattern.test(message)),

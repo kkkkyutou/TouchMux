@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import type { Express } from "express";
+import { listInterfaceCatalog } from "../app/interfaceCatalog.js";
 import { config } from "../core/config.js";
 import type { HubNodeService } from "../services/hubNodeService.js";
 import type { AuthMiddleware } from "../app/auth.js";
@@ -63,6 +64,13 @@ export function registerCoreRoutes({
       managedSessionCount: assertLocalRuntime(localRuntime).sessionManager.listSessionSummaries().length,
       securityWarnings: config.securityWarnings,
       timestamp: Date.now(),
+    });
+  });
+
+  app.get("/api/system/interface-catalog", requireAuth, (_request, response) => {
+    response.json({
+      runtimeMode: config.runtimeMode,
+      items: listInterfaceCatalog(config.runtimeMode),
     });
   });
 

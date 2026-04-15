@@ -68,9 +68,8 @@ function deriveLegacyGoalState(guardDecisionState: GuardDecisionState): GoalStat
       return "running";
     case "waiting_for_idle":
     case "verification_failed":
-      return "idle_waiting";
     case "blocked_by_missing_verifier":
-      return "failed_check";
+      return "idle_waiting";
     case "resuming":
       return "auto_resuming";
     case "satisfied":
@@ -204,6 +203,10 @@ export class SessionRepository {
         max_seq?: number;
       }).max_seq ?? 0,
     );
+  }
+
+  clearGuardEvents(sessionId: string): void {
+    db.prepare("DELETE FROM guard_events WHERE session_id = ?").run(sessionId);
   }
 
   listGuardEventsSince(sessionId: string, seqExclusive: number, source?: GuardEventSource): GuardEventRecord[] {

@@ -72,6 +72,31 @@ test("reduceGoalGuardEvents prioritizes fatal Codex errors", () => {
   assert.equal(reduction.candidate, null);
 });
 
+test("reduceGoalGuardEvents blocks guard on 403 responses fatal error", () => {
+  const fatalMessage =
+    "unexpected status 403 Forbidden: Service error, please retry, url: http://127.0.0.1:8327/v1/responses";
+  const reduction = reduceGoalGuardEvents({
+    codexObservation: buildObservation({
+      available: true,
+      turnState: "failed",
+      fatalError: fatalMessage,
+    }),
+    terminalDiagnostics: {
+      matchedSuccessKeyword: null,
+      matchedStandaloneSuccess: false,
+      matchedIncompleteSignals: [],
+      evidenceEventSeq: null,
+    },
+    hasKeywordRule: true,
+    verificationKind: "file_exists",
+    allowTerminalSignals: true,
+  });
+
+  assert.equal(reduction.nextState, "blocked_by_fatal_error");
+  assert.equal(reduction.fatalReason, fatalMessage);
+  assert.equal(reduction.candidate, null);
+});
+
 test("reduceGoalGuardEvents returns verifying candidate for Codex standalone success", () => {
   const reduction = reduceGoalGuardEvents({
     codexObservation: buildObservation({
@@ -95,12 +120,12 @@ test("reduceGoalGuardEvents returns verifying candidate for Codex standalone suc
   assert.deepEqual(reduction.candidate, {
     source: "codex_assistant_message",
     kind: "codex_assistant_message",
-    detail: "检测到 Codex 结构化 assistant message 中的独立 SUCCESS 成功标记，开始执行 verifier。",
+    detail: "检测到 Codex 结构化 assistant message 中的独立成功关键词命中，开始执行 verifier。",
     eventSeq: null,
   });
 });
 
-test("reduceGoalGuardEvents returns verifying candidate for Codex success keyword", () => {
+test("reduceGoalGuardEvents ignores Codex substring keyword candidate", () => {
   const reduction = reduceGoalGuardEvents({
     codexObservation: buildObservation({
       available: true,
@@ -120,16 +145,11 @@ test("reduceGoalGuardEvents returns verifying candidate for Codex success keywor
     allowTerminalSignals: true,
   });
 
-  assert.equal(reduction.nextState, "verifying");
-  assert.deepEqual(reduction.candidate, {
-    source: "codex_assistant_message",
-    kind: "success_keyword",
-    detail: "检测到 Codex 结构化 assistant message 中的成功关键词：SUCCESS-done，开始执行 verifier。",
-    eventSeq: null,
-  });
+  assert.equal(reduction.nextState, null);
+  assert.equal(reduction.candidate, null);
 });
 
-test("reduceGoalGuardEvents ignores terminal keyword without strict verifier or standalone success", () => {
+test("reduceGoalGuardEvents ignores terminal substring keyword candidate", () => {
   const reduction = reduceGoalGuardEvents({
     codexObservation: buildObservation(),
     terminalDiagnostics: {
@@ -159,6 +179,24 @@ test("reduceGoalGuardEvents ignores terminal-only candidates when terminal signa
     hasKeywordRule: true,
     verificationKind: "file_exists",
     allowTerminalSignals: false,
+  });
+
+  assert.equal(reduction.nextState, null);
+  assert.equal(reduction.candidate, null);
+});
+
+test("reduceGoalGuardEvents ignores terminal standalone success candidate even when terminal signals are enabled", () => {
+  const reduction = reduceGoalGuardEvents({
+    codexObservation: buildObservation(),
+    terminalDiagnostics: {
+      matchedSuccessKeyword: "SUCCESS",
+      matchedStandaloneSuccess: true,
+      matchedIncompleteSignals: [],
+      evidenceEventSeq: 9,
+    },
+    hasKeywordRule: true,
+    verificationKind: "file_exists",
+    allowTerminalSignals: true,
   });
 
   assert.equal(reduction.nextState, null);
@@ -207,8 +245,8 @@ test("reduceGoalGuardVerificationResult maps receipt outcomes into guard states"
     detail: "need verifier",
   }));
   assert.deepEqual(missingVerifier, {
-    nextState: "blocked_by_missing_verifier",
-    reason: "need verifier",
+    nextState: "waiting_for_idle",
+    reason: "need verifier 守卫不会确认成功，但会继续等待新的有效进展或后续自动续跑。",
     keepPreviousSuccessEvidence: true,
   });
 

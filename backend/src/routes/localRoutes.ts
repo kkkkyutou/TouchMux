@@ -304,27 +304,6 @@ export function registerLocalRoutes({
     }
   });
 
-  app.get(`${prefix}/goal-guard/:sessionId`, authMiddleware, (request, response) => {
-    const session = localRuntime.sessionManager.getSessionSummary(readPathParam(request.params.sessionId));
-    if (!session) {
-      response.status(404).json({ message: "会话不存在" });
-      return;
-    }
-    response.json({
-      goalConfig: session.goalConfig,
-      goalState: session.goalState,
-    });
-  });
-
-  app.get(`${prefix}/goal-guard/:sessionId/debug`, authMiddleware, async (request, response) => {
-    const debugInfo = await localRuntime.sessionManager.getGoalDebugInfo(readPathParam(request.params.sessionId));
-    if (!debugInfo) {
-      response.status(404).json({ message: "会话不存在" });
-      return;
-    }
-    response.json(debugInfo);
-  });
-
   app.get(`${prefix}/goal-guard/templates`, authMiddleware, (_request, response) => {
     response.json({
       items: localRuntime.goalGuardTemplateService.listTemplates(),
@@ -360,6 +339,27 @@ export function registerLocalRoutes({
     } catch (error) {
       sendError(response, error);
     }
+  });
+
+  app.get(`${prefix}/goal-guard/:sessionId`, authMiddleware, (request, response) => {
+    const session = localRuntime.sessionManager.getSessionSummary(readPathParam(request.params.sessionId));
+    if (!session) {
+      response.status(404).json({ message: "会话不存在" });
+      return;
+    }
+    response.json({
+      goalConfig: session.goalConfig,
+      goalState: session.goalState,
+    });
+  });
+
+  app.get(`${prefix}/goal-guard/:sessionId/debug`, authMiddleware, async (request, response) => {
+    const debugInfo = await localRuntime.sessionManager.getGoalDebugInfo(readPathParam(request.params.sessionId));
+    if (!debugInfo) {
+      response.status(404).json({ message: "会话不存在" });
+      return;
+    }
+    response.json(debugInfo);
   });
 
   app.post(`${prefix}/session/:id/app-server-bridge-probe`, authMiddleware, async (request, response) => {

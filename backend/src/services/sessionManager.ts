@@ -61,6 +61,9 @@ interface RuntimeState {
   lastPaneSnapshot: string;
   goalCheckPaneSnapshot: string;
   lastViewerActivityAt: number | null;
+  activeViewerCount: number;
+  tmuxCopyModeActive: boolean;
+  tmuxViewStateUpdatedAt: number | null;
 }
 
 interface GoalGuardDebugInfo {
@@ -132,7 +135,6 @@ interface ParsedStructuredVerifier {
 }
 
 const submitDelayArray = new Int32Array(new SharedArrayBuffer(4));
-const tmuxLiteralSubmitDelayMs = 300;
 const guardEchoWindowMs = 4000;
 const goalGuardFirstProbeDelayMs = 5000;
 const goalGuardRunningCooldownMs = 4000;
@@ -161,6 +163,9 @@ function defaultRuntimeState(): RuntimeState {
     lastPaneSnapshot: "",
     goalCheckPaneSnapshot: "",
     lastViewerActivityAt: null,
+    activeViewerCount: 0,
+    tmuxCopyModeActive: false,
+    tmuxViewStateUpdatedAt: null,
   };
 }
 
@@ -203,6 +208,50 @@ function buildDefaultResumePromptTemplate(goalConfig: GoalGuardConfig | null | u
   return `继续执行既定目标，未完成前不要停止。完成后必须输出 ${getPrimarySuccessMarker(goalConfig) ?? "SUCCESS"}。`;
 }
 
+export function detectCodexSubmitBlockedReason(paneText: string): string | null {
+  const normalized = normalizeTerminalTextForGoalMatch(paneText);
+  const compact = compactNormalizedTerminalText(paneText).toLowerCase();
+  if (!normalized.trim()) {
+    return null;
+  }
+  if (compact.includes("messages to be submitted after next tool call")) {
+    return "Codex 已把这次输入暂存为待提交草稿，尚未回到立即发送态。";
+  }
+  if (
+    compact.includes("esc to interrupt")
+    && /\bworking\s*\(/i.test(normalized)
+  ) {
+    return "Codex 当前仍在执行中的 turn，输入框还没有回到可立即提交态。";
+  }
+  if (
+    compact.includes("background terminal running")
+    && compact.includes("working")
+  ) {
+    return "Codex 当前仍有后台任务在执行，续跑提示若现在注入会被留在草稿区。";
+  }
+  return null;
+}
+
+export function buildGuardPromptText(goalConfig: GoalGuardConfig | null | undefined): string {
+  const rawPrompt = goalConfig?.resumePromptTemplate || buildDefaultResumePromptTemplate(goalConfig);
+  return rawPrompt
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .trim();
+}
+
+export function detectTerminalSuccessKeywordMatch(value: string, goalConfig: GoalGuardConfig | null | undefined): string | null {
+  const marker = getPrimarySuccessMarker(goalConfig);
+  if (!marker) {
+    return null;
+  }
+  const lines = tailNonEmptyLines(value, 12);
+  return lines.some((line) => line === marker) ? marker : null;
+}
+
 function hasStandaloneSuccessMarker(value: string, goalConfig: GoalGuardConfig | null | undefined): boolean {
   const marker = getPrimarySuccessMarker(goalConfig);
   if (!marker) {
@@ -236,15 +285,19 @@ function hasIncompleteProgressSignal(value: string): boolean {
 }
 
 function buildGuardPromptFragments(goalConfig: GoalGuardConfig): string[] {
-  return [
-    flattenPromptLine(goalConfig.goalText) ? `当前目标：${flattenPromptLine(goalConfig.goalText)}` : "",
-    flattenPromptLine(goalConfig.resumePromptTemplate || buildDefaultResumePromptTemplate(goalConfig)),
-  ].filter(Boolean);
+  const prompt = buildGuardPromptText(goalConfig);
+  if (!prompt) {
+    return [];
+  }
+  return prompt
+    .split("\n")
+    .map((line) => normalizeTerminalTextForGoalMatch(line).trim())
+    .filter(Boolean);
 }
 
 function sanitizeGoalWindowForEvaluation(goalWindow: string, goalConfig: GoalGuardConfig): string {
   const normalized = normalizeTerminalTextForGoalMatch(goalWindow);
-  const fragments = buildGuardPromptFragments(goalConfig).map((fragment) => normalizeTerminalTextForGoalMatch(fragment).trim());
+  const fragments = buildGuardPromptFragments(goalConfig);
   if (fragments.length === 0) {
     return normalized;
   }
@@ -262,12 +315,8 @@ function sanitizeGoalWindowForEvaluation(goalWindow: string, goalConfig: GoalGua
 
 function getGoalMatchDiagnostics(goalWindow: string, goalConfig: GoalGuardConfig): GoalMatchDiagnostics {
   const sanitizedGoalWindow = sanitizeGoalWindowForEvaluation(goalWindow, goalConfig);
-  const normalizedGoalWindow = normalizeTerminalTextForGoalMatch(sanitizedGoalWindow);
   return {
-    matchedSuccessKeyword:
-      goalConfig.successKeywords.find((keyword) =>
-        normalizedGoalWindow.toLowerCase().includes(normalizeTerminalTextForGoalMatch(keyword).toLowerCase()),
-      ) ?? null,
+    matchedSuccessKeyword: detectTerminalSuccessKeywordMatch(sanitizedGoalWindow, goalConfig),
     matchedStandaloneSuccess: hasStandaloneSuccessMarker(sanitizedGoalWindow, goalConfig),
     matchedIncompleteSignals: findIncompleteProgressSignals(sanitizedGoalWindow),
     evidenceEventSeq: null,
@@ -638,8 +687,9 @@ const terminalFatalStopPatterns = [
 ];
 
 export function detectTerminalFatalStopSignal(text: string): string | null {
+  const recentTail = tailNonEmptyLines(text, 16).join("\n");
   for (const pattern of terminalFatalStopPatterns) {
-    const match = text.match(pattern);
+    const match = recentTail.match(pattern);
     if (match) {
       return match[0];
     }
@@ -649,6 +699,11 @@ export function detectTerminalFatalStopSignal(text: string): string | null {
 
 export class SessionManager extends EventEmitter {
   private readonly runtime = new Map<string, RuntimeState>();
+  private readonly runtimeContextState = new Map<string, {
+    state: "live" | "tmux_resynced" | "persisted_only";
+    detail: string | null;
+    updatedAt: number | null;
+  }>();
   private readonly codexObserver = new CodexObserver();
   private readonly codexAppServerObserver = new CodexAppServerObserver();
   private static readonly viewportNoiseSuppressionMs = 2500;
@@ -677,6 +732,14 @@ export class SessionManager extends EventEmitter {
         lastPaneSnapshot: runtime.lastPaneSnapshot,
         goalCheckPaneSnapshot: runtime.goalCheckPaneSnapshot,
         lastViewerActivityAt: null,
+        activeViewerCount: 0,
+        tmuxCopyModeActive: false,
+        tmuxViewStateUpdatedAt: null,
+      });
+      this.runtimeContextState.set(runtime.sessionId, {
+        state: "persisted_only",
+        detail: "当前运行时上下文来自上次持久化快照，尚未重新与 tmux 实时状态对齐。",
+        updatedAt: runtime.updatedAt,
       });
     }
   }
@@ -689,16 +752,32 @@ export class SessionManager extends EventEmitter {
         ? session.guardDecisionState
         : hasTmuxSession
           ? session.goalConfig.enabled
-            ? "waiting_for_idle"
+            ? session.guardDecisionState === "blocked_by_missing_verifier"
+              ? "waiting_for_idle"
+              : "waiting_for_idle"
             : "disabled"
           : "manually_overridden";
       this.repository.updateSession(session.id, {
         status: nextStatus,
         guardDecisionState: nextGuardDecisionState,
-        guardDecisionReason: hasTmuxSession ? null : "tmux 会话不存在，已标记为手动终止态。",
+        guardDecisionReason: hasTmuxSession
+          ? session.guardDecisionState === "blocked_by_missing_verifier"
+            ? "旧的缺少严格验收阻塞态已自动清理，守卫恢复等待。"
+            : null
+          : "tmux 会话不存在，已标记为手动终止态。",
+        verificationReceipt:
+          hasTmuxSession && session.guardDecisionState === "blocked_by_missing_verifier"
+            ? null
+            : session.verificationReceipt,
       });
       if (hasTmuxSession) {
         this.refreshRuntimeFromTmux(session);
+      } else if (!this.runtimeContextState.has(session.id)) {
+        this.runtimeContextState.set(session.id, {
+          state: "persisted_only",
+          detail: "tmux 会话已不存在，当前只保留持久化的历史运行时上下文。",
+          updatedAt: this.repository.getRuntimeState(session.id)?.updatedAt ?? null,
+        });
       }
     }
   }
@@ -722,14 +801,54 @@ export class SessionManager extends EventEmitter {
         lastPaneSnapshot: persisted?.lastPaneSnapshot ?? fallback.lastPaneSnapshot,
         goalCheckPaneSnapshot: persisted?.goalCheckPaneSnapshot ?? fallback.goalCheckPaneSnapshot,
         lastViewerActivityAt: null,
+        activeViewerCount: 0,
+        tmuxCopyModeActive: false,
+        tmuxViewStateUpdatedAt: null,
       });
     }
     return this.runtime.get(sessionId)!;
   }
 
-  private persistRuntime(sessionId: string): void {
+  private resolveTmuxCopyModeState(sessionName: string): boolean {
+    const result = spawnSync("tmux", ["display-message", "-p", "-t", `${sessionName}:0.0`, "#{pane_in_mode}"], {
+      stdio: "pipe",
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      return false;
+    }
+    return result.stdout.trim() === "1";
+  }
+
+  private updateTmuxViewState(
+    sessionId: string,
+    changes: Partial<Pick<RuntimeState, "tmuxCopyModeActive" | "activeViewerCount">>,
+  ): void {
     const runtime = this.getRuntime(sessionId);
-    this.repository.updateRuntimeState(sessionId, {
+    let changed = false;
+    if (changes.tmuxCopyModeActive !== undefined && runtime.tmuxCopyModeActive !== changes.tmuxCopyModeActive) {
+      runtime.tmuxCopyModeActive = changes.tmuxCopyModeActive;
+      changed = true;
+    }
+    if (changes.activeViewerCount !== undefined) {
+      const nextViewerCount = Math.max(0, changes.activeViewerCount);
+      if (runtime.activeViewerCount !== nextViewerCount) {
+        runtime.activeViewerCount = nextViewerCount;
+        changed = true;
+      }
+    }
+    if (changed) {
+      runtime.tmuxViewStateUpdatedAt = Date.now();
+    }
+  }
+
+  private persistRuntime(
+    sessionId: string,
+    contextState: "live" | "tmux_resynced" | "persisted_only" = "live",
+    contextDetail?: string | null,
+  ): void {
+    const runtime = this.getRuntime(sessionId);
+    const persisted = this.repository.updateRuntimeState(sessionId, {
       buffer: runtime.buffer,
       choiceOverlay: runtime.choiceOverlay,
       goalActivatedAt: runtime.goalActivatedAt,
@@ -742,6 +861,17 @@ export class SessionManager extends EventEmitter {
       lastCapturedPane: runtime.lastCapturedPane,
       lastPaneSnapshot: runtime.lastPaneSnapshot,
       goalCheckPaneSnapshot: runtime.goalCheckPaneSnapshot,
+    });
+    this.runtimeContextState.set(sessionId, {
+      state: contextState,
+      detail:
+        contextDetail
+        ?? (contextState === "tmux_resynced"
+          ? "当前运行时上下文来自 tmux pane 重新同步。"
+          : contextState === "persisted_only"
+            ? "当前运行时上下文仍停留在持久化快照。"
+            : "当前运行时上下文来自本次进程内实时采集。"),
+      updatedAt: persisted.updatedAt,
     });
   }
 
@@ -798,6 +928,9 @@ export class SessionManager extends EventEmitter {
       sessionId: session.id,
       status: passed ? "success" : "failed",
       verificationKind: verificationSpec.kind,
+      candidateSource: candidate.source,
+      candidateKind: candidate.kind,
+      candidateDetail: candidate.detail,
       passed,
       detail,
       exitCode,
@@ -929,7 +1062,9 @@ export class SessionManager extends EventEmitter {
     }
 
     if (!verificationSpec.strict) {
-      const detail = `检测到候选完成信号，但当前 taskRunId=${session.currentTaskRunId ?? "unknown"} 未配置严格 verifier，拒绝自动确认成功。`;
+      const detail =
+        `检测到基于成功关键词的候选完成信号，来源=${candidate.source}，类型=${candidate.kind}，` +
+        `但当前 taskRunId=${session.currentTaskRunId ?? "unknown"} 未配置严格 verifier，拒绝自动确认成功。`;
       const receipt = this.buildVerificationReceipt(session, verificationSpec, candidate, false, detail, null);
       return {
         passed: false,
@@ -1005,13 +1140,55 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  private resolveTmuxTargetPane(target: string): string {
+    return target.includes(":") ? target : `${target}:0.0`;
+  }
+
+  private clearTmuxCopyMode(target: string): void {
+    const paneTarget = this.resolveTmuxTargetPane(target);
+    spawnSync("tmux", ["send-keys", "-t", paneTarget, "-X", "cancel"], {
+      stdio: "pipe",
+      encoding: "utf8",
+    });
+  }
+
+  private pasteLiteral(target: string, text: string): void {
+    const paneTarget = this.resolveTmuxTargetPane(target);
+    const bufferName = `touchmux_submit_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+    try {
+      const setResult = spawnSync("tmux", ["set-buffer", "-b", bufferName, "--", text], {
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+      if (setResult.status !== 0) {
+        throw new Error(setResult.stderr?.trim() || "tmux set-buffer 执行失败");
+      }
+      const pasteResult = spawnSync("tmux", ["paste-buffer", "-d", "-p", "-b", bufferName, "-t", paneTarget], {
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+      if (pasteResult.status !== 0) {
+        throw new Error(pasteResult.stderr?.trim() || "tmux paste-buffer 执行失败");
+      }
+    } finally {
+      spawnSync("tmux", ["delete-buffer", "-b", bufferName], {
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+    }
+  }
+
   private sendLiteral(sessionName: string, text: string, appendEnter = false): void {
-    this.runTmux(["send-keys", "-t", sessionName, "-l", text]);
+    const paneTarget = this.resolveTmuxTargetPane(sessionName);
+    // If the viewer left tmux in copy-mode, literal input and Enter are consumed by tmux
+    // instead of reaching Codex. Always cancel copy-mode before submitting guard text.
+    this.clearTmuxCopyMode(paneTarget);
+    this.pasteLiteral(paneTarget, text);
     if (appendEnter) {
-      // Codex TUI may keep freshly pasted text inside the composer if Enter lands
-      // in the same instant. A short delay makes the submit reliable.
-      sleepSync(tmuxLiteralSubmitDelayMs);
-      this.runTmux(["send-keys", "-t", sessionName, "Enter"]);
+      // Keep a simple fixed delay here so we can validate multiline submit behavior
+      // directly without extra readiness heuristics interfering with the experiment.
+      sleepSync(Math.max(0, config.tmuxLiteralSubmitDelayMs));
+      this.runTmux(["send-keys", "-t", paneTarget, "Enter"]);
     }
   }
 
@@ -1055,7 +1232,10 @@ export class SessionManager extends EventEmitter {
     runtime.lastCapturedPane = captured;
     runtime.lastPaneSnapshot = nextPaneSnapshot;
     runtime.choiceOverlay = detectChoiceOverlay(runtime.buffer);
-    this.persistRuntime(session.id);
+    this.updateTmuxViewState(session.id, {
+      tmuxCopyModeActive: this.resolveTmuxCopyModeState(session.tmuxSessionName),
+    });
+    this.persistRuntime(session.id, "tmux_resynced", "当前运行时上下文已通过 tmux pane 与实时会话重新对齐。");
     const nextPreview = summarizeTerminalText(runtime.buffer);
     const changes: Partial<
       Pick<
@@ -1134,7 +1314,7 @@ export class SessionManager extends EventEmitter {
       },
     });
     this.getRuntime(created.id);
-    this.persistRuntime(created.id);
+    this.persistRuntime(created.id, "live", "当前会话由本次进程创建，运行时上下文从空状态开始实时采集。");
     this.repository.logAudit("session.created", created, created.id);
     this.emitSession(created.id);
     return this.toSummary(created);
@@ -1151,12 +1331,23 @@ export class SessionManager extends EventEmitter {
 
   private toSummary(record: ManagedSessionRecord): SessionSummary {
     const runtime = this.getRuntime(record.id);
+    const runtimeContext = this.runtimeContextState.get(record.id) ?? {
+      state: "persisted_only" as const,
+      detail: "当前运行时上下文尚未标记来源。",
+      updatedAt: this.repository.getRuntimeState(record.id)?.updatedAt ?? null,
+    };
     return {
       ...record,
       nodeLabel: config.localNode.label,
       cwd: this.relativeSessionCwd(record),
       hasTmuxSession: this.hasTmuxSession(record.tmuxSessionName),
       choiceOverlay: runtime.choiceOverlay,
+      tmuxCopyModeActive: runtime.tmuxCopyModeActive,
+      tmuxViewStateUpdatedAt: runtime.tmuxViewStateUpdatedAt,
+      activeViewerCount: runtime.activeViewerCount,
+      runtimeContextState: runtimeContext.state,
+      runtimeContextDetail: runtimeContext.detail,
+      runtimeContextUpdatedAt: runtimeContext.updatedAt,
     };
   }
 
@@ -1195,7 +1386,13 @@ export class SessionManager extends EventEmitter {
       throw new Error("tmux 会话不存在，无法附着");
     }
     this.refreshRuntimeFromTmux(session);
-    this.getRuntime(sessionId).lastViewerActivityAt = Date.now();
+    const runtime = this.getRuntime(sessionId);
+    runtime.lastViewerActivityAt = Date.now();
+    this.updateTmuxViewState(sessionId, {
+      activeViewerCount: runtime.activeViewerCount + 1,
+      tmuxCopyModeActive: this.resolveTmuxCopyModeState(session.tmuxSessionName),
+    });
+    this.emitSession(sessionId);
     const pty = spawn("tmux", ["attach-session", "-t", session.tmuxSessionName], {
       name: "xterm-256color",
       cols,
@@ -1210,6 +1407,19 @@ export class SessionManager extends EventEmitter {
       },
     });
     const attachStartedAt = Date.now();
+    let viewerClosed = false;
+    const finalizeViewer = () => {
+      if (viewerClosed) {
+        return;
+      }
+      viewerClosed = true;
+      const latestRuntime = this.getRuntime(sessionId);
+      this.updateTmuxViewState(sessionId, {
+        activeViewerCount: Math.max(0, latestRuntime.activeViewerCount - 1),
+        tmuxCopyModeActive: this.resolveTmuxCopyModeState(session.tmuxSessionName),
+      });
+      this.emitSession(sessionId);
+    };
     pty.onData((chunk) => {
       const normalizedChunk = compactNormalizedTerminalText(chunk);
       const normalizedBuffer = compactNormalizedTerminalText(this.getRecentOutput(sessionId));
@@ -1224,6 +1434,7 @@ export class SessionManager extends EventEmitter {
       onData(chunk);
     });
     pty.onExit(() => {
+      finalizeViewer();
       onExit();
     });
     return pty;
@@ -1515,13 +1726,8 @@ export class SessionManager extends EventEmitter {
   }
 
   detectFatalGuardStop(sessionId: string): string | null {
-    const runtime = this.getRuntime(sessionId);
-    const recentTerminalEvents = this.repository
-      .listGuardEventsSince(sessionId, runtime.goalCheckEventSeq, "terminal_output")
-      .map((event) => event.text)
-      .join("\n")
-      .slice(-6000);
-    return detectTerminalFatalStopSignal(recentTerminalEvents);
+    const goalWindowOutput = this.getGoalWindowOutput(sessionId);
+    return detectTerminalFatalStopSignal(goalWindowOutput);
   }
 
   async detectCodexFatalGuardStop(sessionId: string): Promise<string | null> {
@@ -1601,25 +1807,23 @@ export class SessionManager extends EventEmitter {
     const targetPane = `${session.tmuxSessionName}:0.0`;
     if (action === "enter") {
       this.runTmux(["copy-mode", "-t", targetPane]);
-      return;
-    }
-    if (action === "page_up") {
+    } else if (action === "page_up") {
       this.runTmux(["send-keys", "-t", targetPane, "-N", String(repeat), "-X", "page-up"]);
-      return;
-    }
-    if (action === "page_down") {
+    } else if (action === "page_down") {
       this.runTmux(["send-keys", "-t", targetPane, "-N", String(repeat), "-X", "page-down"]);
-      return;
-    }
-    if (action === "line_up") {
+    } else if (action === "line_up") {
       this.runTmux(["send-keys", "-t", targetPane, "-N", String(repeat), "-X", "scroll-up"]);
-      return;
-    }
-    if (action === "line_down") {
+    } else if (action === "line_down") {
       this.runTmux(["send-keys", "-t", targetPane, "-N", String(repeat), "-X", "scroll-down"]);
-      return;
+    } else {
+      this.runTmux(["send-keys", "-t", targetPane, "-X", "cancel"]);
     }
-    this.runTmux(["send-keys", "-t", targetPane, "-X", "cancel"]);
+    const runtime = this.getRuntime(sessionId);
+    runtime.lastViewerActivityAt = Date.now();
+    this.updateTmuxViewState(sessionId, {
+      tmuxCopyModeActive: this.resolveTmuxCopyModeState(session.tmuxSessionName),
+    });
+    this.emitSession(sessionId);
   }
 
   closeSession(sessionId: string, force = false): SessionSummary {
@@ -1695,10 +1899,33 @@ export class SessionManager extends EventEmitter {
       : null;
     const nextGoalSpec = goalConfig.enabled ? buildGoalSpec(goalConfig) : null;
     const nextVerificationSpec = goalConfig.enabled ? buildVerificationSpec(goalConfig) : null;
-    runtime.goalActivatedAt = goalConfig.enabled ? Date.now() : null;
-    runtime.goalCheckOffset = goalConfig.enabled ? runtime.buffer.length : 0;
-    runtime.goalCheckEventSeq = goalConfig.enabled ? this.repository.getLastGuardEventSeq(sessionId) : 0;
-    runtime.goalCheckPaneSnapshot = goalConfig.enabled ? runtime.lastPaneSnapshot : "";
+    if (goalConfig.enabled && !preserveSatisfiedState) {
+      // Start each guard run from a clean observation baseline so stale terminal history
+      // and prior guard prompts cannot participate in the new success decision.
+      this.repository.clearGuardEvents(sessionId);
+      runtime.buffer = "";
+      runtime.lastAutoResumeAt = null;
+      runtime.autoResumeCount = 0;
+      runtime.lastInputAt = null;
+      runtime.lastGuardPromptAt = null;
+      runtime.lastGuardPromptText = "";
+      const latestPane = this.captureTmuxPane(currentSession.tmuxSessionName) ?? runtime.lastCapturedPane;
+      runtime.lastCapturedPane = latestPane;
+      runtime.lastPaneSnapshot = buildPaneSnapshot(latestPane);
+      runtime.goalActivatedAt = Date.now();
+      runtime.goalCheckOffset = 0;
+      runtime.goalCheckEventSeq = 0;
+      runtime.goalCheckPaneSnapshot = runtime.lastPaneSnapshot;
+    } else {
+      runtime.goalActivatedAt = goalConfig.enabled ? Date.now() : null;
+      runtime.goalCheckOffset = goalConfig.enabled ? runtime.buffer.length : 0;
+      runtime.goalCheckEventSeq = goalConfig.enabled ? this.repository.getLastGuardEventSeq(sessionId) : 0;
+      runtime.goalCheckPaneSnapshot = goalConfig.enabled ? runtime.lastPaneSnapshot : "";
+      if (!goalConfig.enabled) {
+        runtime.lastGuardPromptAt = null;
+        runtime.lastGuardPromptText = "";
+      }
+    }
     this.persistRuntime(sessionId);
     const shouldResetTerminalGoalState =
       goalConfig.enabled &&
@@ -1802,19 +2029,23 @@ export class SessionManager extends EventEmitter {
     if (!session) {
       throw new Error("会话不存在");
     }
+    const latestPane = this.captureTmuxPane(session.tmuxSessionName);
+    const submitBlockedReason = detectCodexSubmitBlockedReason(latestPane ?? this.getRuntime(sessionId).lastCapturedPane);
+    if (submitBlockedReason) {
+      const updated = this.repository.updateSession(sessionId, {
+        guardDecisionState: "observing_codex_turn",
+        guardDecisionReason: `守卫检测到 ${submitBlockedReason} 本轮跳过自动续跑，等待 Codex 回到可提交态。`,
+      });
+      this.repository.logAudit("goal.auto_resume.skipped_busy", { submitBlockedReason }, sessionId);
+      this.emitSession(sessionId);
+      return this.toSummary(updated);
+    }
     const runtime = this.getRuntime(sessionId);
     runtime.lastAutoResumeAt = Date.now();
     runtime.autoResumeCount += 1;
     runtime.lastInputAt = runtime.lastAutoResumeAt;
     this.persistRuntime(sessionId);
-    const prompt = [
-      flattenPromptLine(session.goalConfig.goalText)
-        ? `当前目标：${flattenPromptLine(session.goalConfig.goalText)}`
-        : null,
-      flattenPromptLine(session.goalConfig.resumePromptTemplate || "继续执行既定目标，未完成前不要停止；完成后输出成功标记。"),
-    ]
-      .filter((item): item is string => Boolean(item))
-      .join("；");
+    const prompt = buildGuardPromptText(session.goalConfig);
     this.sendLiteral(session.tmuxSessionName, prompt, true);
     runtime.lastGuardPromptAt = runtime.lastAutoResumeAt;
     runtime.lastGuardPromptText = prompt;

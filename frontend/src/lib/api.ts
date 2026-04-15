@@ -5,10 +5,15 @@ import type {
   GoalGuardDebugInfo,
   GoalGuardTemplate,
   HistoryConversationSummary,
+  InterfaceCatalogEntry,
   NodeSummary,
   SessionSummary,
   WorkspaceEntry,
 } from "../types/api";
+
+export interface RequestTargetOptions {
+  apiBaseUrl?: string | null;
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -38,8 +43,19 @@ export function isUnauthorizedError(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
 }
 
-async function request<T>(path: string, token: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/$/, "");
+}
+
+function resolveApiUrl(path: string, options?: RequestTargetOptions): string {
+  if (!options?.apiBaseUrl) {
+    return path;
+  }
+  return `${trimTrailingSlash(options.apiBaseUrl)}${path}`;
+}
+
+async function request<T>(path: string, token: string, init?: RequestInit, options?: RequestTargetOptions): Promise<T> {
+  const response = await fetch(resolveApiUrl(path, options), {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -91,11 +107,12 @@ export async function createSession(
     prompt?: string;
     sourceCodexSessionId?: string;
   },
+  options?: RequestTargetOptions,
 ): Promise<SessionSummary> {
   return request<SessionSummary>("/api/session/create", token, {
     method: "POST",
     body: JSON.stringify(payload),
-  });
+  }, options);
 }
 
 export async function closeSession(
@@ -103,39 +120,50 @@ export async function closeSession(
   sessionId: string,
   nodeId: string,
   force = false,
+  options?: RequestTargetOptions,
 ): Promise<SessionSummary> {
   return request<SessionSummary>(`/api/session/${sessionId}/close`, token, {
     method: "POST",
     body: JSON.stringify({ nodeId, force }),
-  });
+  }, options);
 }
 
-export async function fetchSessionDetail(token: string, sessionId: string): Promise<SessionSummary> {
-  return request<SessionSummary>(`/api/session/${sessionId}/detail`, token);
+export async function fetchSessionDetail(token: string, sessionId: string, options?: RequestTargetOptions): Promise<SessionSummary> {
+  return request<SessionSummary>(`/api/session/${sessionId}/detail`, token, undefined, options);
 }
 
-export async function renameSession(token: string, sessionId: string, nodeId: string, title: string): Promise<SessionSummary> {
+export async function renameSession(
+  token: string,
+  sessionId: string,
+  nodeId: string,
+  title: string,
+  options?: RequestTargetOptions,
+): Promise<SessionSummary> {
   return request<SessionSummary>(`/api/session/${sessionId}/rename`, token, {
     method: "POST",
     body: JSON.stringify({ nodeId, title }),
-  });
+  }, options);
 }
 
-export async function runAppServerBridgeProbe(token: string, sessionId: string): Promise<AppServerBridgeProbeResult> {
+export async function runAppServerBridgeProbe(
+  token: string,
+  sessionId: string,
+  options?: RequestTargetOptions,
+): Promise<AppServerBridgeProbeResult> {
   return request<AppServerBridgeProbeResult>(`/api/session/${sessionId}/app-server-bridge-probe`, token, {
     method: "POST",
-  });
+  }, options);
 }
 
-export async function fetchHistory(token: string, nodeId?: string): Promise<HistoryConversationSummary[]> {
+export async function fetchHistory(token: string, nodeId?: string, options?: RequestTargetOptions): Promise<HistoryConversationSummary[]> {
   const query = nodeId ? `?${new URLSearchParams({ nodeId }).toString()}` : "";
-  const data = await request<{ items: HistoryConversationSummary[] }>(`/api/codex/history${query}`, token);
+  const data = await request<{ items: HistoryConversationSummary[] }>(`/api/codex/history${query}`, token, undefined, options);
   return data.items;
 }
 
-export async function fetchRoots(token: string, nodeId?: string): Promise<WorkspaceEntry[]> {
+export async function fetchRoots(token: string, nodeId?: string, options?: RequestTargetOptions): Promise<WorkspaceEntry[]> {
   const query = nodeId ? `?${new URLSearchParams({ nodeId }).toString()}` : "";
-  const data = await request<{ items: WorkspaceEntry[] }>(`/api/workspace/roots${query}`, token);
+  const data = await request<{ items: WorkspaceEntry[] }>(`/api/workspace/roots${query}`, token, undefined, options);
   return data.items;
 }
 
@@ -144,21 +172,34 @@ export async function listDirectory(
   nodeId: string,
   rootPath: string,
   relativePath: string,
+  options?: RequestTargetOptions,
 ): Promise<FileEntry[]> {
   const query = new URLSearchParams({ nodeId, rootPath, relativePath });
-  const data = await request<{ items: FileEntry[] }>(`/api/fs/list?${query.toString()}`, token);
+  const data = await request<{ items: FileEntry[] }>(`/api/fs/list?${query.toString()}`, token, undefined, options);
   return data.items;
 }
 
-export async function readFile(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<string> {
+export async function readFile(
+  token: string,
+  nodeId: string,
+  rootPath: string,
+  relativePath: string,
+  options?: RequestTargetOptions,
+): Promise<string> {
   const query = new URLSearchParams({ nodeId, rootPath, relativePath });
-  const data = await request<{ content: string }>(`/api/fs/file?${query.toString()}`, token);
+  const data = await request<{ content: string }>(`/api/fs/file?${query.toString()}`, token, undefined, options);
   return data.content;
 }
 
-export async function downloadFile(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<Blob> {
+export async function downloadFile(
+  token: string,
+  nodeId: string,
+  rootPath: string,
+  relativePath: string,
+  options?: RequestTargetOptions,
+): Promise<Blob> {
   const query = new URLSearchParams({ nodeId, rootPath, relativePath });
-  const response = await fetch(`/api/fs/download?${query.toString()}`, {
+  const response = await fetch(resolveApiUrl(`/api/fs/download?${query.toString()}`, options), {
     headers: {
       Authorization: `Bearer ${token}`,
     },
@@ -176,25 +217,38 @@ export async function updateFile(
   rootPath: string,
   relativePath: string,
   content: string,
+  options?: RequestTargetOptions,
 ): Promise<void> {
   await request("/api/fs/file", token, {
     method: "PUT",
     body: JSON.stringify({ nodeId, rootPath, relativePath, content }),
-  });
+  }, options);
 }
 
-export async function createFolder(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<void> {
+export async function createFolder(
+  token: string,
+  nodeId: string,
+  rootPath: string,
+  relativePath: string,
+  options?: RequestTargetOptions,
+): Promise<void> {
   await request("/api/fs/folder", token, {
     method: "POST",
     body: JSON.stringify({ nodeId, rootPath, relativePath }),
-  });
+  }, options);
 }
 
-export async function createFile(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<void> {
+export async function createFile(
+  token: string,
+  nodeId: string,
+  rootPath: string,
+  relativePath: string,
+  options?: RequestTargetOptions,
+): Promise<void> {
   await request("/api/fs/file", token, {
     method: "POST",
     body: JSON.stringify({ nodeId, rootPath, relativePath }),
-  });
+  }, options);
 }
 
 export async function uploadFile(
@@ -206,11 +260,12 @@ export async function uploadFile(
     fileName: string;
     contentBase64: string;
   },
+  options?: RequestTargetOptions,
 ): Promise<{ relativePath: string }> {
   return request<{ ok: true; relativePath: string }>("/api/fs/upload", token, {
     method: "POST",
     body: JSON.stringify(payload),
-  });
+  }, options);
 }
 
 export async function renameEntry(
@@ -219,18 +274,25 @@ export async function renameEntry(
   rootPath: string,
   sourceRelativePath: string,
   targetRelativePath: string,
+  options?: RequestTargetOptions,
 ): Promise<void> {
   await request("/api/fs/rename", token, {
     method: "POST",
     body: JSON.stringify({ nodeId, rootPath, sourceRelativePath, targetRelativePath }),
-  });
+  }, options);
 }
 
-export async function deleteEntry(token: string, nodeId: string, rootPath: string, relativePath: string): Promise<void> {
+export async function deleteEntry(
+  token: string,
+  nodeId: string,
+  rootPath: string,
+  relativePath: string,
+  options?: RequestTargetOptions,
+): Promise<void> {
   await request("/api/fs/delete", token, {
     method: "POST",
     body: JSON.stringify({ nodeId, rootPath, relativePath }),
-  });
+  }, options);
 }
 
 export async function updateGoalGuard(
@@ -238,19 +300,29 @@ export async function updateGoalGuard(
   nodeId: string,
   sessionId: string,
   goalConfig: GoalGuardConfig,
+  options?: RequestTargetOptions,
 ): Promise<SessionSummary> {
   return request<SessionSummary>(`/api/goal-guard/${sessionId}`, token, {
     method: "PUT",
     body: JSON.stringify({ nodeId, ...goalConfig }),
-  });
+  }, options);
 }
 
-export async function fetchGoalGuardDebug(token: string, sessionId: string): Promise<GoalGuardDebugInfo> {
-  return request<GoalGuardDebugInfo>(`/api/goal-guard/${sessionId}/debug`, token);
+export async function fetchGoalGuardDebug(token: string, sessionId: string, options?: RequestTargetOptions): Promise<GoalGuardDebugInfo> {
+  return request<GoalGuardDebugInfo>(`/api/goal-guard/${sessionId}/debug`, token, undefined, options);
 }
 
-export async function fetchGoalGuardTemplates(token: string, nodeId: string): Promise<GoalGuardTemplate[]> {
-  const data = await request<{ items: GoalGuardTemplate[] }>(`/api/goal-guard/templates?${new URLSearchParams({ nodeId }).toString()}`, token);
+export async function fetchGoalGuardTemplates(
+  token: string,
+  nodeId: string,
+  options?: RequestTargetOptions,
+): Promise<GoalGuardTemplate[]> {
+  const data = await request<{ items: GoalGuardTemplate[] }>(
+    `/api/goal-guard/templates?${new URLSearchParams({ nodeId }).toString()}`,
+    token,
+    undefined,
+    options,
+  );
   return data.items;
 }
 
@@ -258,36 +330,48 @@ export async function saveGoalGuardTemplate(
   token: string,
   nodeId: string,
   payload: { id?: string | null; name: string; content: string },
+  options?: RequestTargetOptions,
 ): Promise<GoalGuardTemplate> {
   return request<GoalGuardTemplate>("/api/goal-guard/templates", token, {
     method: "POST",
     body: JSON.stringify({ nodeId, ...payload }),
-  });
+  }, options);
 }
 
-export async function deleteGoalGuardTemplate(token: string, nodeId: string, templateId: string): Promise<void> {
+export async function deleteGoalGuardTemplate(
+  token: string,
+  nodeId: string,
+  templateId: string,
+  options?: RequestTargetOptions,
+): Promise<void> {
   await request<{ ok: true }>(`/api/goal-guard/templates/${templateId}`, token, {
     method: "DELETE",
     body: JSON.stringify({ nodeId }),
-  });
+  }, options);
 }
 
 export async function setDefaultGoalGuardTemplate(
   token: string,
   nodeId: string,
   templateId: string,
+  options?: RequestTargetOptions,
 ): Promise<GoalGuardTemplate> {
   return request<GoalGuardTemplate>(`/api/goal-guard/templates/${templateId}/default`, token, {
     method: "POST",
     body: JSON.stringify({ nodeId }),
-  });
+  }, options);
 }
 
-export async function overrideStop(token: string, sessionId: string, nodeId: string): Promise<SessionSummary> {
+export async function overrideStop(
+  token: string,
+  sessionId: string,
+  nodeId: string,
+  options?: RequestTargetOptions,
+): Promise<SessionSummary> {
   return request<SessionSummary>(`/api/goal-guard/${sessionId}/override-stop`, token, {
     method: "POST",
     body: JSON.stringify({ nodeId }),
-  });
+  }, options);
 }
 
 export async function fetchCapabilities(token: string): Promise<{
@@ -303,6 +387,18 @@ export async function fetchCapabilities(token: string): Promise<{
   features: Record<string, boolean>;
 }> {
   return request("/api/system/capabilities", token);
+}
+
+export async function fetchInterfaceCatalog(
+  token: string,
+  options?: RequestTargetOptions,
+): Promise<{ runtimeMode: string; items: InterfaceCatalogEntry[] }> {
+  return request<{ runtimeMode: string; items: InterfaceCatalogEntry[] }>(
+    "/api/system/interface-catalog",
+    token,
+    undefined,
+    options,
+  );
 }
 
 export async function fetchConfigSchema(token: string): Promise<

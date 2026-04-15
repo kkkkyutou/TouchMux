@@ -47,6 +47,9 @@ const fatalErrorPatterns = [
   /exceeded retry limit/i,
   /last status:\s*429\b/i,
   /\b429 Too Many Requests\b/i,
+  /unexpected status\s*403\b.*\/v1\/responses\b/i,
+  /\b403 Forbidden\b.*\/v1\/responses\b/i,
+  /service error,\s*please retry.*\/v1\/responses\b/i,
   /rate limit(ed|ing)?/i,
   /quota exceeded/i,
   /insufficient[_ ]quota/i,
@@ -396,14 +399,16 @@ function parseLastTurn(
     mapTurnState(lastTurn?.status, null),
     mapTurnState(null, threadStatus),
   );
+  const turnStartedAt =
+    parseTimestamp(lastTurn?.startedAt)
+    ?? parseTimestamp(lastTurn?.createdAt);
   const turnBoundaryAt =
     parseTimestamp(lastTurn?.completedAt)
     ?? parseTimestamp(lastTurn?.updatedAt)
-    ?? parseTimestamp(lastTurn?.startedAt)
-    ?? parseTimestamp(lastTurn?.createdAt);
+    ?? turnStartedAt;
   const includeTurnPayload =
     sinceTimestamp === null
-    || state === "running"
+    || (state === "running" && turnStartedAt !== null && turnStartedAt >= sinceTimestamp)
     || (turnBoundaryAt !== null && turnBoundaryAt >= sinceTimestamp);
   if (!lastTurn || !includeTurnPayload) {
     return {
@@ -463,22 +468,11 @@ function parseLastTurn(
   }
 
   const assistantText = assistantMessages.map((message) => message.text).join("\n");
-  const matchedSuccessKeyword = goalConfig
-    ? goalConfig.successKeywords.find((keyword) =>
-        compactGoalText(assistantText).toLowerCase().includes(compactGoalText(keyword).toLowerCase()),
-      ) ?? null
-    : null;
+  const matchedSuccessKeyword = null;
   const matchedStandaloneSuccess = hasStandaloneSuccessMarker(assistantText, goalConfig);
   const matchedIncompleteSignals = findIncompleteProgressSignals(assistantText);
   const successMessageRecord =
     assistantMessages.find((message) => hasStandaloneSuccessMarker(message.text, goalConfig))
-    ?? assistantMessages.find((message) =>
-      goalConfig
-        ? goalConfig.successKeywords.some((keyword) =>
-            compactGoalText(message.text).toLowerCase().includes(compactGoalText(keyword).toLowerCase()),
-          )
-        : false,
-    )
     ?? null;
   const fatalError = errors.find((message) => fatalErrorPatterns.some((pattern) => pattern.test(message))) ?? null;
   const threadStatusType = extractStatusType(threadStatus);
@@ -526,22 +520,11 @@ export class CodexAppServerObserver {
     const errors = [...parsedTurn.errors, ...notificationSnapshot.errors];
     const commands = [...parsedTurn.commands, ...notificationSnapshot.commands];
     const assistantText = assistantMessages.map((message) => message.text).join("\n");
-    const matchedSuccessKeyword = options.goalConfig
-      ? options.goalConfig.successKeywords.find((keyword) =>
-          compactGoalText(assistantText).toLowerCase().includes(compactGoalText(keyword).toLowerCase()),
-        ) ?? null
-      : null;
+    const matchedSuccessKeyword = null;
     const matchedStandaloneSuccess = hasStandaloneSuccessMarker(assistantText, options.goalConfig);
     const matchedIncompleteSignals = findIncompleteProgressSignals(assistantText);
     const successMessageRecord =
       assistantMessages.find((message) => hasStandaloneSuccessMarker(message.text, options.goalConfig))
-      ?? assistantMessages.find((message) =>
-        options.goalConfig
-          ? options.goalConfig.successKeywords.some((keyword) =>
-              compactGoalText(message.text).toLowerCase().includes(compactGoalText(keyword).toLowerCase()),
-            )
-          : false,
-      )
       ?? null;
     const resolvedTurnState = resolveObservedStateWithSource(notificationSnapshot.state, parsedTurn.state);
     const turnState = resolvedTurnState.state;
